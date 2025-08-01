@@ -277,14 +277,15 @@ with tabs[1]:
         filtered_df['color'] = filtered_df['Flag'].map(lambda x: flag_color_map.get(x, "#888888"))
         filtered_df['actual'] = filtered_df['SNAP_Applications'].apply(format_snap)
         
-        # Get predictions for July 2025 if available
+        # Get predictions for August 2025 if available
         if pred_df is not None:
-            july_2025_pred = pred_df[pred_df['date'] == '2025-07-01'].copy()
-            if not july_2025_pred.empty:
-                july_2025_pred['county_normalized'] = july_2025_pred['county'].str.strip().str.lower()
-                pred_map_july = july_2025_pred.set_index('county_normalized')['predicted_applications'].to_dict()
+            august_2025_pred = pred_df[pred_df['date'] == '2025-08-01'].copy()
+            if not august_2025_pred.empty:
+                august_2025_pred['county_normalized'] = august_2025_pred['county'].str.strip().str.lower()
+                pred_map_august = august_2025_pred.set_index('county_normalized')['predicted_applications'].to_dict()
                 filtered_df['county_normalized'] = filtered_df['county'].str.strip().str.lower()
-                filtered_df['july_prediction'] = filtered_df['county_normalized'].map(pred_map_july)
+                filtered_df['august_prediction'] = filtered_df['county_normalized'].map(pred_map_august)
+                
                 # Merge with popData for hover
                 if pop_df is not None:
                     pop_df.columns = pop_df.columns.str.strip()
@@ -299,20 +300,60 @@ with tabs[1]:
                         how='left'
                     )
                     filtered_df['hover_text'] = filtered_df.apply(
-                        lambda row: f"<b>{row['county']}</b><br>Metro: {row.get('metro_area', 'N/A')}<br>Population: {row.get('Population', 'N/A'):,}<br>Population Density: {row.get('Population Density', 'N/A'):,}<br>FIPS: {row.get('fips', 'N/A')}<br>Actual: {row['actual']}<br>Prediction for Jul 2025: {format_snap(row['july_prediction'])}",
+                        lambda row: f"<b>{row['county']}</b><br>Metro: {row.get('metro_area', 'N/A')}<br>Population: {row.get('Population', 'N/A'):,}<br>Population Density: {row.get('Population Density', 'N/A'):,}<br>FIPS: {row.get('fips', 'N/A')}<br>Actual: {row['actual']}<br>Prediction for Aug 2025: {format_snap(row['august_prediction'])}",
                         axis=1
                     )
                 else:
                     filtered_df['hover_text'] = filtered_df.apply(
-                        lambda row: f"Actual: {row['actual']}<br>Prediction for Jul 2025: {format_snap(row['july_prediction'])}",
+                        lambda row: f"<b>{row['county']}</b><br>Actual: {row['actual']}<br>Prediction for Aug 2025: {format_snap(row['august_prediction'])}",
                         axis=1
                     )
             else:
-                filtered_df['hover_text'] = filtered_df.apply(
-                    lambda row: f"Actual: {row['actual']}<br>No prediction available", axis=1)
+                # No August predictions available, but still show population data
+                if pop_df is not None:
+                    pop_df.columns = pop_df.columns.str.strip()
+                    filtered_df['county_clean'] = filtered_df['county'].str.replace(' County', '', regex=False)
+                    pop_df['county_clean'] = pop_df['County'].str.replace(' County', '', regex=False)
+                    if 'fips' not in pop_df.columns:
+                        print('DEBUG: popData columns:', pop_df.columns.tolist())
+                        raise KeyError("'fips' column not found in popData.csv. Columns are: " + str(pop_df.columns.tolist()))
+                    filtered_df = filtered_df.merge(
+                        pop_df[['county_clean', 'metro_area', 'Population', 'Population Density', 'fips']],
+                        on='county_clean',
+                        how='left'
+                    )
+                    filtered_df['hover_text'] = filtered_df.apply(
+                        lambda row: f"<b>{row['county']}</b><br>Metro: {row.get('metro_area', 'N/A')}<br>Population: {row.get('Population', 'N/A'):,}<br>Population Density: {row.get('Population Density', 'N/A'):,}<br>FIPS: {row.get('fips', 'N/A')}<br>Actual: {row['actual']}<br>No prediction available",
+                        axis=1
+                    )
+                else:
+                    filtered_df['hover_text'] = filtered_df.apply(
+                        lambda row: f"<b>{row['county']}</b><br>Actual: {row['actual']}<br>No prediction available", 
+                        axis=1
+                    )
         else:
-            filtered_df['hover_text'] = filtered_df.apply(
-            lambda row: f"Actual: {row['actual']}<br>No prediction available", axis=1)
+            # No prediction data available, but still show population data
+            if pop_df is not None:
+                pop_df.columns = pop_df.columns.str.strip()
+                filtered_df['county_clean'] = filtered_df['county'].str.replace(' County', '', regex=False)
+                pop_df['county_clean'] = pop_df['County'].str.replace(' County', '', regex=False)
+                if 'fips' not in pop_df.columns:
+                    print('DEBUG: popData columns:', pop_df.columns.tolist())
+                    raise KeyError("'fips' column not found in popData.csv. Columns are: " + str(pop_df.columns.tolist()))
+                filtered_df = filtered_df.merge(
+                    pop_df[['county_clean', 'metro_area', 'Population', 'Population Density', 'fips']],
+                    on='county_clean',
+                    how='left'
+                )
+                filtered_df['hover_text'] = filtered_df.apply(
+                    lambda row: f"<b>{row['county']}</b><br>Metro: {row.get('metro_area', 'N/A')}<br>Population: {row.get('Population', 'N/A'):,}<br>Population Density: {row.get('Population Density', 'N/A'):,}<br>FIPS: {row.get('fips', 'N/A')}<br>Actual: {row['actual']}<br>No prediction available",
+                    axis=1
+                )
+            else:
+                filtered_df['hover_text'] = filtered_df.apply(
+                    lambda row: f"<b>{row['county']}</b><br>Actual: {row['actual']}<br>No prediction available", 
+                    axis=1
+                )
 
     # Debug: Print the columns in filtered_df
     print("Columns in filtered_df:", filtered_df.columns.tolist())
