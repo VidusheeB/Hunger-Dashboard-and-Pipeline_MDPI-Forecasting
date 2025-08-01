@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from pandas import DateOffset
 import plotly.express as px
 import requests
 import glob, os
@@ -179,13 +180,30 @@ with tabs[1]:
         pred_df['county'] = pred_df['county'].astype(str)
         pred_df['county_normalized'] = pred_df['county'].str.strip().str.lower()
 
-        # Set predicted month to current month and year
-        current_date = datetime.now()
-        pred_month_label = current_date.strftime("%Y-%m-01")  # Match the CSV format
-        pred_dt = pd.to_datetime(pred_month_label, format='%Y-%m-%d')
-        pred_month_english = pred_dt.strftime('%b %Y')
-        pred_option = f"Predicted SNAP Applications for {pred_month_english}"
-        date_options_with_pred = date_options + [pred_option]
+        # Determine the target prediction month from the prediction data
+        if not pred_df.empty:
+            # The prediction data in finalPrediction.csv has the target month
+            # But we need to read the input data month from the prediction files
+            # For now, we'll use the prediction date and subtract 1 month to get input month
+            pred_date = pred_df['date'].iloc[0]  # e.g., '2025-08-01'
+            pred_dt = pd.to_datetime(pred_date)
+            # The input data month is 1 month before the prediction date
+            input_month = pred_dt - DateOffset(months=1)  # August - 1 = July
+            # Calculate the target month (next month after input data)
+            target_month = input_month + DateOffset(months=1)  # July + 1 = August
+            pred_month_english = target_month.strftime('%b %Y')
+            pred_option = f"Predicted SNAP Applications for {pred_month_english}"
+            date_options_with_pred = date_options + [pred_option]
+            # Store the prediction date for later use
+            pred_month_label = pred_date
+        else:
+            # Fallback to current month if no prediction data
+            current_date = datetime.now()
+            pred_month_label = current_date.strftime("%Y-%m-01")
+            pred_dt = pd.to_datetime(pred_month_label, format='%Y-%m-%d')
+            pred_month_english = pred_dt.strftime('%b %Y')
+            pred_option = f"Predicted SNAP Applications for {pred_month_english}"
+            date_options_with_pred = date_options + [pred_option]
     else:
         pred_df = None
         date_options_with_pred = date_options

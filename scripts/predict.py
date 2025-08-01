@@ -70,18 +70,52 @@ def get_latest_trends_for_metro(metro_area):
     """
     Load the latest trend data from the prediction folder for each keyword.
     Scale the prediction data to the training data using scale_trends, then normalize by population.
+    Dynamically detects the month of prediction data and predicts for the next month.
     """
     trends = {}
+    
     if os.path.exists(PREDICTION_BASE_DIR):
-        keywords = [d for d in os.listdir(PREDICTION_BASE_DIR)
-                   if os.path.isdir(os.path.join(PREDICTION_BASE_DIR, d))]
+        # Use base folders (CalFresh, FoodBank) which contain prediction data
+        keywords = ['CalFresh', 'FoodBank']
     else:
         logger.error(f"Prediction base directory {PREDICTION_BASE_DIR} does not exist")
         return {}
-    logger.info(f"Detected keywords: {keywords}")
+    
+    logger.info(f"Using prediction data from base folders: {keywords}")
+    
+    # Detect the month of the prediction data
+    prediction_month = None
+    for keyword in keywords:
+        sample_file = os.path.join(PREDICTION_BASE_DIR, keyword, f"Bakersfield.csv")
+        if os.path.exists(sample_file):
+            try:
+                with open(sample_file, 'r') as f:
+                    lines = f.readlines()
+                    for line in lines:
+                        if line.strip().startswith('2025-'):
+                            # Extract the month from the first date found
+                            date_str = line.split(',')[0]
+                            date_obj = pd.to_datetime(date_str)
+                            prediction_month = date_obj
+                            logger.info(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
+                            break
+                    if prediction_month:
+                        break
+            except Exception as e:
+                logger.warning(f"Could not detect prediction month: {e}")
+    
+    if not prediction_month:
+        logger.warning("Could not detect prediction month, using current month")
+        prediction_month = datetime.now().replace(day=1)
+    
+    # Calculate the target month (next month after prediction data)
+    target_month = prediction_month + pd.DateOffset(months=1)
+    logger.info(f"Predicting for: {target_month.strftime('%B %Y')}")
+    
     for keyword in keywords:
         prediction_file = os.path.join(PREDICTION_BASE_DIR, keyword, f"{metro_area}.csv")
         training_file = os.path.join("src/data/trends", keyword, f"{metro_area}.csv")
+        
         if not os.path.exists(prediction_file):
             logger.warning(f"No prediction file found for {metro_area} in {keyword}")
             continue
@@ -297,10 +331,32 @@ def generate_predictions(counties=None):
         counties = list_available_counties()
     
     predictions = {}
-    today = datetime.now().date()
-    # Generate prediction date (first day of current month)
-    prediction_date = today.replace(day=1)
-    prediction_date_str = prediction_date.strftime("%Y-%m-01")
+    
+    # Detect the target month from prediction data
+    target_month = None
+    sample_file = os.path.join(PREDICTION_BASE_DIR, "CalFresh", "Bakersfield.csv")
+    if os.path.exists(sample_file):
+        try:
+            with open(sample_file, 'r') as f:
+                lines = f.readlines()
+                for line in lines:
+                    if line.strip().startswith('2025-'):
+                        # Extract the month from the first date found
+                        date_str = line.split(',')[0]
+                        prediction_month = pd.to_datetime(date_str)
+                        target_month = prediction_month + pd.DateOffset(months=1)
+                        print(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
+                        print(f"Predicting for: {target_month.strftime('%B %Y')}")
+                        break
+        except Exception as e:
+            print(f"Could not detect prediction month: {e}")
+    
+    if not target_month:
+        print("Could not detect target month, using current month")
+        target_month = datetime.now().replace(day=1)
+    
+    # Generate prediction date (first day of target month)
+    prediction_date_str = target_month.strftime("%Y-%m-01")
     
     print(f"Generating predictions for {prediction_date_str}...")
     
@@ -317,6 +373,7 @@ def generate_predictions(counties=None):
                 continue
             
             population = get_population_for_county(county)
+            # Use prediction data trends to predict target month
             prediction = predict_next_month(trends, population)
             predictions[(county, prediction_date_str)] = round(prediction, 2)
             print(f"{county}: {prediction:.2f}")
