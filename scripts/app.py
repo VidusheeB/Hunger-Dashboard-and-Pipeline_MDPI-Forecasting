@@ -184,14 +184,14 @@ with tabs[1]:
         pred_month_label = current_date.strftime("%Y-%m-01")  # Match the CSV format
         pred_dt = pd.to_datetime(pred_month_label, format='%Y-%m-%d')
         pred_month_english = pred_dt.strftime('%b %Y')
-        pred_option = f"Predicted: {pred_month_english}"
+        pred_option = f"Predicted SNAP Applications for {pred_month_english}"
         date_options_with_pred = date_options + [pred_option]
     else:
         pred_df = None
         date_options_with_pred = date_options
 
     selected_date = st.selectbox("Select Month", options=date_options_with_pred, index=len(date_options_with_pred)-1, key="pred_month")
-    use_predicted = pred_df is not None and selected_date == f"Predicted: {pred_month_english}"
+    use_predicted = pred_df is not None and selected_date == f"Predicted SNAP Applications for {pred_month_english}"
 
     if use_predicted:
         pred_rows = pred_df[pred_df['date'] == pred_month_label].copy()
