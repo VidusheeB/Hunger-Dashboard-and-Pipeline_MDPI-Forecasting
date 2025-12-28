@@ -1,59 +1,59 @@
 county,metro_area
 Alameda,SanFranciscoOaklandSanJose
-Alpine,SacramentoStocktonModesto
-Amador,SacramentoStocktonModesto
-Butte,SacramentoStocktonModesto
-Calaveras,SacramentoStocktonModesto
-Colusa,SacramentoStocktonModesto
 Contra Costa,SanFranciscoOaklandSanJose
-Del Norte,SacramentoStocktonModesto
-El Dorado,SacramentoStocktonModesto
-Fresno,SacramentoStocktonModesto
-Glenn,SacramentoStocktonModesto
-Humboldt,SacramentoStocktonModesto
-Imperial,SanDiego
-Inyo,LosAngeles
-Kern,LosAngeles
-Kings,SacramentoStocktonModesto
-Lake,SacramentoStocktonModesto
-Lassen,SacramentoStocktonModesto
-Los Angeles,SanDiego
-Madera,SacramentoStocktonModesto
+Lake,SanFranciscoOaklandSanJose
 Marin,SanFranciscoOaklandSanJose
-Mariposa,SacramentoStocktonModesto
 Mendocino,SanFranciscoOaklandSanJose
-Merced,SacramentoStocktonModesto
-Modoc,SacramentoStocktonModesto
-Mono,SacramentoStocktonModesto
-Monterey,SanDiego
 Napa,SanFranciscoOaklandSanJose
-Nevada,SacramentoStocktonModesto
-Orange,LosAngeles
-Placer,SacramentoStocktonModesto
-Plumas,SacramentoStocktonModesto
-Riverside,SanDiego
-Sacramento,SacramentoStocktonModesto
-San Benito,SanFranciscoOaklandSanJose
-San Bernardino,SanDiego
-San Diego,LosAngeles
 San Francisco,SanFranciscoOaklandSanJose
-San Joaquin,SacramentoStocktonModesto
-San Luis Obispo,SanFranciscoOaklandSanJose
 San Mateo,SanFranciscoOaklandSanJose
-Santa Barbara,LosAngeles
 Santa Clara,SanFranciscoOaklandSanJose
-Santa Cruz,SanFranciscoOaklandSanJose
-Shasta,SacramentoStocktonModesto
-Sierra,SacramentoStocktonModesto
-Siskiyou,SacramentoStocktonModesto
 Solano,SanFranciscoOaklandSanJose
 Sonoma,SanFranciscoOaklandSanJose
+Amador,SacramentoStocktonModesto
+Calaveras,SacramentoStocktonModesto
+Colusa,SacramentoStocktonModesto
+El Dorado,SacramentoStocktonModesto
+Nevada,SacramentoStocktonModesto
+Placer,SacramentoStocktonModesto
+Plumas,SacramentoStocktonModesto
+Sacramento,SacramentoStocktonModesto
+San Joaquin,SacramentoStocktonModesto
+Sierra,SacramentoStocktonModesto
 Stanislaus,SacramentoStocktonModesto
 Sutter,SacramentoStocktonModesto
-Tehama,SacramentoStocktonModesto
-Trinity,SacramentoStocktonModesto
-Tulare,LosAngeles
 Tuolumne,SacramentoStocktonModesto
-Ventura,LosAngeles
 Yolo,SacramentoStocktonModesto
 Yuba,SacramentoStocktonModesto
+Butte,ChicoRedding
+Glenn,ChicoRedding
+Shasta,ChicoRedding
+Tehama,ChicoRedding
+Trinity,ChicoRedding
+Del Norte,Eureka
+Humboldt,Eureka
+Imperial,Yuma
+Kern,Bakersfield
+Fresno,FresnoVisalia
+Kings,FresnoVisalia
+Madera,FresnoVisalia
+Mariposa,FresnoVisalia
+Merced,FresnoVisalia
+Tulare,FresnoVisalia
+Inyo,LosAngeles
+Los Angeles,LosAngeles
+Orange,LosAngeles
+San Bernardino,LosAngeles
+Ventura,LosAngeles
+Monterey,MontereySalinas
+San Benito,MontereySalinas
+Santa Cruz,MontereySalinas
+San Luis Obispo,SantaBarbaraSantaMariaSanLuisObispo
+Santa Barbara,SantaBarbaraSantaMariaSanLuisObispo
+Riverside,PalmSprings
+San Diego,SanDiego
+Modoc,MedfordKlamathFalls
+Siskiyou,MedfordKlamathFalls
+Alpine,Reno
+Lassen,Reno
+Mono,Reno

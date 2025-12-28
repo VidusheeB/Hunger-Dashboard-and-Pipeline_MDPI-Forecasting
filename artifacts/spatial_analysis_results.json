@@ -1,0 +1,50 @@
+{
+  "county_errors": [
+    {
+      "county": "Modoc",
+      "mae_mean": NaN,
+      "mae_std": NaN,
+      "mae_max": NaN,
+      "mape_mean": NaN,
+      "mape_std": NaN,
+      "mse_mean": NaN,
+      "rmse": NaN,
+      "region": "Northern California"
+    }
+  ],
+  "regional_errors": [
+    {
+      "region": "Northern California",
+      "mae_mean": NaN,
+      "mae_std": NaN,
+      "mape_mean": NaN,
+      "mape_std": NaN,
+      "mse_mean": NaN,
+      "rmse": NaN
+    }
+  ],
+  "top_error_counties": [
+    {
+      "county": "Modoc",
+      "region": "Northern California",
+      "mae_mean": NaN,
+      "mape_mean": NaN,
+      "rmse": NaN
+    }
+  ],
+  "spike_detection": {
+    "total_spikes": 0,
+    "predicted_spikes": 0,
+    "true_positives": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "precision": 0,
+    "recall": 0
+  },
+  "sample_month": "2025-09-01 00:00:00",
+  "sample_month_flags": {
+    "Gray": 1
+  },
+  "total_counties": 1,
+  "total_regions": 1
+}

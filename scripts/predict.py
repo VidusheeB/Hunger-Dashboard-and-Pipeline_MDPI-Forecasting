@@ -22,16 +22,21 @@ def load_global_model():
     with open(os.path.join(MODELS_DIR, "global_model.pkl"), "rb") as f:
         return pickle.load(f)
 
-def predict_next_month(trends_dict, population):
+def predict_next_month(trends_dict, population, median_income, prediction_month=8):
     if not trends_dict:
         raise ValueError("No trend data provided for prediction")
     
     model_info = load_global_model()
     features = model_info["features"]
     model = model_info["model"]
+    
     # trends_dict: {"trend_keyword1": value, "trend_keyword2": value, ...}
-    # Add population to the features
-    input_dict = {**trends_dict, "Population": population}
+    # Add population and median income to the features
+    input_dict = {**trends_dict, "Population": population, "Median_Income": median_income}
+    
+    # Add minimal month feature (avoid overfitting)
+    input_dict["month"] = prediction_month
+    
     # Ensure all features are present
     X_pred = pd.DataFrame([input_dict], columns=features)
     
@@ -44,12 +49,16 @@ def predict_next_month(trends_dict, population):
     if missing_features:
         raise ValueError(f"Missing required features: {', '.join(missing_features)}")
     
-    prediction = model.predict(X_pred)[0]
+    # Model now predicts rates (applications per population)
+    predicted_rate = model.predict(X_pred)[0]
     
-    # Ensure prediction is never negative (SNAP applications cannot be negative)
-    prediction = max(0, prediction)
+    # Ensure rate is never negative
+    predicted_rate = max(0, predicted_rate)
     
-    return prediction
+    # Convert rate back to absolute number of applications
+    predicted_applications = predicted_rate * population
+    
+    return predicted_applications
 
 def get_metro_for_county(county):
     county_metro_map = pd.read_csv(COUNTY_METRO_MAP)
@@ -65,6 +74,35 @@ def get_population_for_county(county):
     if row.empty:
         raise ValueError(f"No population found for county {county}")
     return float(row.iloc[0]["Population"])
+
+def get_median_income_for_county(county):
+    try:
+        income_data = pd.read_csv("src/data/MedianIncome.csv")
+        # Clean the median income column (remove commas and convert to numeric)
+        income_data['Median_Income'] = income_data['Median Income'].str.replace(',', '').astype(float)
+        
+        # First try exact match
+        row = income_data[income_data["County"] == county]
+        
+        # If not found, try with spaces removed (for cases like "San Benito" vs "SanBenito")
+        if row.empty:
+            county_no_spaces = county.replace(" ", "")
+            row = income_data[income_data["County"] == county_no_spaces]
+        
+        # If still not found, try with spaces added (for cases like "SanBenito" vs "San Benito")
+        if row.empty:
+            # Add spaces before capital letters (except the first one)
+            import re
+            county_with_spaces = re.sub(r'(?<!^)(?=[A-Z])', ' ', county)
+            row = income_data[income_data["County"] == county_with_spaces]
+        
+        if row.empty:
+            print(f"Warning: County {county} not found in median income data, using default")
+            return 60000  # Default median income
+        return row["Median_Income"].iloc[0]
+    except Exception as e:
+        print(f"Warning: Could not load median income data: {str(e)}, using default")
+        return 60000  # Default median income
 
 def get_latest_trends_for_metro(metro_area):
     """
@@ -272,6 +310,20 @@ def save_predictions_to_csv(predictions, output_file="src/data/finalPrediction.c
             for (county, date), pred in predictions.items()
         ])
         
+        # Add population data for z-score calculation
+        try:
+            pop_data = pd.read_csv("src/data/popData.csv")
+            # Handle the column name case difference
+            if 'County' in pop_data.columns:
+                pop_data = pop_data.rename(columns={'County': 'county'})
+            pop_data['county'] = pop_data['county'].astype(str)
+            df['county'] = df['county'].astype(str)
+            df = df.merge(pop_data[['county', 'Population']], on='county', how='left')
+        except Exception as e:
+            print(f"Warning: Could not load population data: {str(e)}")
+            # Set a default population if we can't load the data
+            df['Population'] = 100000  # Default population for z-score calculation
+        
         # Load historical SNAP data to calculate county-specific statistics
         try:
             snap_data = pd.read_csv("src/data/SNAPApps/SNAPData.csv", header=None, 
@@ -282,14 +334,26 @@ def save_predictions_to_csv(predictions, output_file="src/data/finalPrediction.c
             )
             snap_data["SNAP_Applications"] = pd.to_numeric(snap_data["SNAP_Applications"].replace("*", pd.NA), errors="coerce")
             
-            # Calculate county-specific statistics from historical data
-            county_stats = snap_data.groupby('county')["SNAP_Applications"].agg(['mean', 'std']).reset_index()
+            # Use the population data already loaded above
+            snap_data['county'] = snap_data['county'].astype(str)
+            
+            # Merge with population data from the predictions dataframe
+            snap_data = snap_data.merge(df[['county', 'Population']].drop_duplicates(), on='county', how='left')
+            
+            # Calculate historical SNAP application rates
+            snap_data['SNAP_Application_Rate'] = snap_data['SNAP_Applications'] / snap_data['Population']
+            
+            # Calculate county-specific statistics from historical rate data
+            county_stats = snap_data.groupby('county')["SNAP_Application_Rate"].agg(['mean', 'std']).reset_index()
             
             # Merge with predictions
             df = df.merge(county_stats, on='county', how='left')
             
-            # Calculate z-scores using historical county-specific statistics
-            df['z_score'] = (df['predicted_applications'] - df['mean']) / df['std']
+            # Calculate predicted rates for z-score calculation
+            df['predicted_rate'] = df['predicted_applications'] / df['Population']
+            
+            # Calculate z-scores using historical county-specific rate statistics
+            df['z_score'] = (df['predicted_rate'] - df['mean']) / df['std']
             df['z_score'] = df['z_score'].fillna(0)  # Fill NaN with 0 if no historical data
             
         except Exception as e:
@@ -373,8 +437,9 @@ def generate_predictions(counties=None):
                 continue
             
             population = get_population_for_county(county)
+            median_income = get_median_income_for_county(county)
             # Use prediction data trends to predict target month
-            prediction = predict_next_month(trends, population)
+            prediction = predict_next_month(trends, population, median_income, prediction_month=8)
             predictions[(county, prediction_date_str)] = round(prediction, 2)
             print(f"{county}: {prediction:.2f}")
             
@@ -400,8 +465,9 @@ def main():
                 sys.exit(1)
 
             population = get_population_for_county(county)
-            # Make prediction
-            prediction = predict_next_month(trends, population)
+            median_income = get_median_income_for_county(county)
+            # Make prediction (August = month 8)
+            prediction = predict_next_month(trends, population, median_income, prediction_month=8)
             print(f"Predicted SNAP applications for {county} next month: {prediction:.2f}")
             
             # Save to CSV

@@ -1,0 +1,16 @@
+{
+  "overall_r2": 1.0,
+  "overall_rmse": 5.089272947571649e-15,
+  "overall_mae": 1.0711773251367815e-15,
+  "overall_smape": 2.3745883826999748e-11,
+  "r2_mean": 1.0,
+  "r2_std": 0.0,
+  "rmse_mean": 1.5064489324758011e-15,
+  "rmse_std": 5.191084765154024e-15,
+  "mae_mean": 1.1716517596049029e-15,
+  "mae_std": 4.007228354866642e-15,
+  "smape_mean": 2.6082582151109144e-11,
+  "smape_std": 8.810377012695928e-11,
+  "total_months": 25,
+  "total_predictions": 1248
+}

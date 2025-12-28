@@ -67,12 +67,62 @@ def create_scaled_training_data():
     for trend_col in trend_cols:
         df_scaled[trend_col] = norm_df[trend_col]
     
-    # Step 3: Save the scaled training data
-    print(f"\n=== STEP 3: SAVING SCALED DATA ===")
+    # Step 3: Add minimal month features to avoid overfitting
+    print(f"\n=== STEP 3: ADDING MINIMAL MONTH FEATURES ===")
+    print("Adding only month feature to capture basic seasonal patterns...")
+    
+    # Convert date to datetime
+    df_scaled['date'] = pd.to_datetime(df_scaled['date'])
+    
+    # Extract month (1-12) - minimal feature to avoid overfitting
+    df_scaled['month'] = df_scaled['date'].dt.month
+    
+    print(f"Month feature added: month (1-12)")
+    print(f"Month distribution: {df_scaled['month'].value_counts().sort_index().to_dict()}")
+    
+    # Step 4: Add median income data
+    print(f"\n=== STEP 4: ADDING MEDIAN INCOME ===")
+    print("Loading and merging median income data...")
+    
+    try:
+        # Load median income data
+        income_df = pd.read_csv("src/data/MedianIncome.csv")
+        
+        # Clean the median income column (remove commas and convert to numeric)
+        income_df['Median_Income'] = income_df['Median Income'].str.replace(',', '').astype(float)
+        
+        # Merge with main dataframe
+        df_scaled = df_scaled.merge(income_df[['County', 'Median_Income']], 
+                                   left_on='county', right_on='County', how='left')
+        
+        # Drop the extra County column
+        df_scaled = df_scaled.drop('County', axis=1)
+        
+        print(f"Median income data merged successfully")
+        print(f"Income range: ${df_scaled['Median_Income'].min():,.0f} - ${df_scaled['Median_Income'].max():,.0f}")
+        
+    except Exception as e:
+        print(f"Warning: Could not load median income data: {str(e)}")
+        # Set default median income if data not available
+        df_scaled['Median_Income'] = 60000  # Default median income
+        print("Using default median income: $60,000")
+    
+    # Step 5: Convert SNAP applications to rates (applications per population)
+    print(f"\n=== STEP 5: CONVERTING TO RATES ===")
+    print("Converting SNAP_Applications to rates (applications per population)...")
+    
+    # Calculate SNAP application rate per population
+    df_scaled['SNAP_Application_Rate'] = df_scaled['SNAP_Applications'] / df_scaled['Population']
+    
+    # Keep the original SNAP_Applications column for reference but use rate as target
+    print(f"SNAP application rates calculated. Range: {df_scaled['SNAP_Application_Rate'].min():.6f} to {df_scaled['SNAP_Application_Rate'].max():.6f}")
+    
+    # Step 6: Save the scaled training data
+    print(f"\n=== STEP 6: SAVING SCALED DATA ===")
     df_scaled.to_csv(output_file, index=False)
     print(f"Scaled training data saved to: {output_file}")
     
-    # Step 4: Show comparison
+    # Step 7: Show comparison
     print("\n=== SCALING COMPARISON ===")
     print("Original vs Scaled trend values (first 5 rows):")
     
@@ -85,8 +135,13 @@ def create_scaled_training_data():
         })
         print(comparison_df.to_string(index=False))
     
-    # Step 5: Update training script to use scaled data
-    print("\n=== STEP 5: UPDATING TRAINING SCRIPT ===")
+    # Show SNAP application rate examples with new features
+    print(f"\nSNAP Application Rate Examples with New Features:")
+    rate_examples = df_scaled[['county', 'month', 'Median_Income', 'SNAP_Applications', 'Population', 'SNAP_Application_Rate']].head()
+    print(rate_examples.to_string(index=False))
+    
+    # Step 8: Update training script to use scaled data
+    print("\n=== STEP 8: UPDATING TRAINING SCRIPT ===")
     update_training_script(output_file)
     
     print(f"\n✅ Scaled training data created successfully!")

@@ -1,10 +1,9 @@
 import os
 import pandas as pd
 import pickle
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import cross_val_score
-from sklearn.linear_model import PoissonRegressor
 import numpy as np
+import xgboost as xgb
 
 AGGREGATE_TRENDS_FILE = "src/data/aggregateTrends_scaled.csv"
 MODELS_DIR = "county_models"
@@ -12,20 +11,37 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 def train_global_model():
     df = pd.read_csv(AGGREGATE_TRENDS_FILE)
-    # Use Population and all columns that start with 'monthly_average_' as features
-    feature_cols = ["Population"] + [col for col in df.columns if col.startswith('monthly_average_')]
+    # Use Population, trend columns, month, and median income features
+    feature_cols = ["Population", "Median_Income"] + [col for col in df.columns if col.startswith('monthly_average_')]
+    
+    # Add minimal month feature (avoid overfitting)
+    month_features = ['month']
+    
+    # Combine all features
+    feature_cols = feature_cols + month_features
+    
+    # Filter to only include features that exist in the dataframe
+    feature_cols = [col for col in feature_cols if col in df.columns]
+    
     X = df[feature_cols]
-    y = df["SNAP_Applications"]
+    # Use SNAP application rates as target variable instead of absolute numbers
+    y = df["SNAP_Application_Rate"]
     # Drop rows with missing values in any feature or target
     mask = X.notna().all(axis=1) & y.notna()
     X = X[mask]
     y = y[mask]
     
-    # Ensure target values are positive (SNAP applications cannot be negative)
+    # Ensure target values are positive (SNAP application rates cannot be negative)
     y = y.clip(lower=0)
 
-    # Fit Random Forest model with constraints to prevent negative predictions
-    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+    # Fit XGBoost model with constraints to prevent negative predictions
+    model = xgb.XGBRegressor(
+        n_estimators=100, 
+        max_depth=6, 
+        learning_rate=0.1,
+        random_state=42,
+        n_jobs=-1
+    )
     model.fit(X, y)
     
     # Check for negative predictions on training data
@@ -36,7 +52,7 @@ def train_global_model():
         print("   This will be handled by clipping predictions to 0 in production")
     
     r2 = model.score(X, y)
-    print(f"Trained Random Forest model | R^2: {r2:.3f}")
+    print(f"Trained XGBoost model (predicting rates) | R^2: {r2:.3f}")
 
     # Cross-validation score
     cv_scores = cross_val_score(model, X, y, cv=5, scoring='r2')
@@ -50,14 +66,14 @@ def train_global_model():
 
     # Model info
     print(f"\n=== MODEL INFO ===")
-    print(f"Number of trees: {model.n_estimators}")
+    print(f"Number of estimators: {model.n_estimators}")
     print(f"Max depth: {model.max_depth}")
-    print(f"Min samples split: {model.min_samples_split}")
-    print(f"Min samples leaf: {model.min_samples_leaf}")
-    print(f"Model type: Random Forest (with post-processing to ensure non-negative predictions)")
+    print(f"Learning rate: {model.learning_rate}")
+    print(f"Model type: XGBoost (predicting SNAP application rates)")
+    print(f"Target variable: SNAP_Application_Rate (applications per population)")
 
     with open(os.path.join(MODELS_DIR, "global_model.pkl"), "wb") as f:
-        pickle.dump({"model": model, "features": feature_cols, "type": "random_forest"}, f)
+        pickle.dump({"model": model, "features": feature_cols, "type": "xgboost"}, f)
 
 if __name__ == "__main__":
     train_global_model()
