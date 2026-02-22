@@ -183,8 +183,9 @@ def get_latest_trends_for_metro(metro_area, county=None):
         logger.warning("Could not detect prediction month, using current month")
         prediction_month = datetime.now().replace(day=1)
     
-    # Calculate the target month (next month after prediction data)
-    target_month = prediction_month + pd.DateOffset(months=1)
+    # Target month is the month of the last data point (not +1: the last date
+    # in weekly data is the week ending that month, so we predict for that month)
+    target_month = prediction_month.replace(day=1)
     logger.info(f"Predicting for: {target_month.strftime('%B %Y')}")
     
     for keyword in keywords:
@@ -328,7 +329,7 @@ def _detect_target_month():
                             except (ValueError, pd.errors.ParserError):
                                 continue
                 if last_date is not None:
-                    return last_date + pd.DateOffset(months=1)
+                    return last_date.replace(day=1)
             except Exception:
                 continue
     # Fallback to current month
@@ -486,8 +487,8 @@ def generate_predictions(counties=None):
                             continue
                 if last_date is not None:
                     prediction_month = last_date
-                    target_month = prediction_month + pd.DateOffset(months=1)
-                    print(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
+                    target_month = prediction_month.replace(day=1)
+                    print(f"Detected prediction data through: {prediction_month.strftime('%B %Y')}")
                     print(f"Predicting for: {target_month.strftime('%B %Y')}")
         except Exception as e:
             print(f"Could not detect prediction month: {e}")
