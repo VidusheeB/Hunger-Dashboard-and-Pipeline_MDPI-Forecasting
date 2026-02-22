@@ -23,42 +23,67 @@ def load_global_model():
         return pickle.load(f)
 
 def predict_next_month(trends_dict, population, median_income, prediction_month=8):
+    """Predict SNAP applications for next month.
+
+    Returns:
+        tuple: (predicted_applications, lower_bound, upper_bound)
+    """
     if not trends_dict:
         raise ValueError("No trend data provided for prediction")
-    
+
     model_info = load_global_model()
     features = model_info["features"]
     model = model_info["model"]
-    
+
     # trends_dict: {"trend_keyword1": value, "trend_keyword2": value, ...}
     # Add population and median income to the features
     input_dict = {**trends_dict, "Population": population, "Median_Income": median_income}
-    
+
     # Add minimal month feature (avoid overfitting)
     input_dict["month"] = prediction_month
-    
+
     # Ensure all features are present
     X_pred = pd.DataFrame([input_dict], columns=features)
-    
+
     # Check for missing features
     missing_features = []
     for feature in features:
         if pd.isna(X_pred[feature].iloc[0]):
             missing_features.append(feature)
-    
+
     if missing_features:
         raise ValueError(f"Missing required features: {', '.join(missing_features)}")
-    
+
+    # Concept drift detection: warn if inputs are outside training range
+    feature_ranges = model_info.get("feature_ranges")
+    if feature_ranges:
+        for feat in features:
+            val = X_pred[feat].iloc[0]
+            r = feature_ranges.get(feat)
+            if r and (val < r['min'] or val > r['max']):
+                logger.warning(
+                    f"DRIFT: '{feat}' = {val:.6f} is outside training range "
+                    f"[{r['min']:.6f}, {r['max']:.6f}]"
+                )
+
     # Model now predicts rates (applications per population)
     predicted_rate = model.predict(X_pred)[0]
-    
+
     # Ensure rate is never negative
     predicted_rate = max(0, predicted_rate)
-    
-    # Convert rate back to absolute number of applications
+
+    # Confidence interval based on normal consecutive walk-forward MAE (rate units)
+    # From walk_forward_production.py - XGBoost (tuned): MAE = 0.000877
+    BACKTEST_MAE = 0.000877
+    lower_rate = max(0, predicted_rate - BACKTEST_MAE)
+    upper_rate = predicted_rate + BACKTEST_MAE
+
+    # Convert rates back to absolute number of applications
     predicted_applications = predicted_rate * population
-    
-    return predicted_applications
+    lower_bound = lower_rate * population
+    upper_bound = upper_rate * population
+
+    return predicted_applications, lower_bound, upper_bound
 
 def get_metro_for_county(county):
     county_metro_map = pd.read_csv(COUNTY_METRO_MAP)
@@ -97,18 +122,25 @@ def get_median_income_for_county(county):
             row = income_data[income_data["County"] == county_with_spaces]
         
         if row.empty:
-            print(f"Warning: County {county} not found in median income data, using default")
-            return 60000  # Default median income
+            # Use dataset median instead of arbitrary hardcoded value
+            dataset_median = income_data['Median_Income'].median()
+            print(f"Warning: County '{county}' not found in median income data, using dataset median ${dataset_median:,.0f}")
+            return dataset_median
         return row["Median_Income"].iloc[0]
     except Exception as e:
-        print(f"Warning: Could not load median income data: {str(e)}, using default")
-        return 60000  # Default median income
+        print(f"Warning: Could not load median income data: {str(e)}, using fallback $60,000")
+        return 60000
 
-def get_latest_trends_for_metro(metro_area):
+def get_latest_trends_for_metro(metro_area, county=None):
     """
     Load the latest trend data from the prediction folder for each keyword.
     Scale the prediction data to the training data using scale_trends, then normalize by population.
     Dynamically detects the month of prediction data and predicts for the next month.
+
+    Args:
+        metro_area: The metro area to load trends for.
+        county: The specific county to use for population normalization.
+                If None, falls back to first county in the metro (legacy behavior).
     """
     trends = {}
     
@@ -130,13 +162,17 @@ def get_latest_trends_for_metro(metro_area):
                 with open(sample_file, 'r') as f:
                     lines = f.readlines()
                     for line in lines:
-                        if line.strip().startswith('2025-'):
-                            # Extract the month from the first date found
-                            date_str = line.split(',')[0]
-                            date_obj = pd.to_datetime(date_str)
-                            prediction_month = date_obj
-                            logger.info(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
-                            break
+                        stripped = line.strip()
+                        # Match any date-like line (YYYY-MM-DD) instead of hardcoded year
+                        if stripped and stripped[0].isdigit() and '-' in stripped:
+                            date_str = stripped.split(',')[0]
+                            try:
+                                date_obj = pd.to_datetime(date_str)
+                                prediction_month = date_obj
+                                logger.info(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
+                                break
+                            except (ValueError, pd.errors.ParserError):
+                                continue
                     if prediction_month:
                         break
             except Exception as e:
@@ -244,24 +280,24 @@ def get_latest_trends_for_metro(metro_area):
         logger.info(f"Latest {keyword} value for {metro_area}: {latest_pred_value}")
         
         # --- Population normalization ---
-        # Need to know which county this metro_area maps to. Assume a function or mapping is available.
-        # For now, try to infer county from metro_area (if only one county per metro, or use a mapping function)
-        # This is a placeholder: you may need to adjust for your actual mapping logic.
-        # We'll use the first county in the county-metro mapping for this metro.
-        county_map_df = pd.read_csv('src/data/county_to_metro.csv')
-        county_map_df.columns = county_map_df.columns.str.strip()
-        counties_for_metro = county_map_df[county_map_df['metro_area'] == metro_area]['county'].tolist()
-        if not counties_for_metro:
-            logger.warning(f"No county found for metro area {metro_area}")
-            continue
-        county = counties_for_metro[0]
+        # Use the specific county passed in, so normalization matches the prediction target
+        norm_county = county
+        if norm_county is None:
+            county_map_df = pd.read_csv('src/data/county_to_metro.csv')
+            county_map_df.columns = county_map_df.columns.str.strip()
+            counties_for_metro = county_map_df[county_map_df['metro_area'] == metro_area]['county'].tolist()
+            if not counties_for_metro:
+                logger.warning(f"No county found for metro area {metro_area}")
+                continue
+            norm_county = counties_for_metro[0]
+            logger.warning(f"No county specified, falling back to '{norm_county}' for normalization")
         # Create a DataFrame for normalization
-        norm_df = pd.DataFrame({'county': [county], 'trend': [latest_pred_value]})
+        norm_df = pd.DataFrame({'county': [norm_county], 'trend': [latest_pred_value]})
         norm_df = normalize_trends_by_population(norm_df, county_col='county', trend_cols=['trend'])
-        
+
         # Debug: Check the normalized value
         normalized_value = norm_df['trend'].iloc[0]
-        logger.info(f"Normalized {keyword} value for {county}: {normalized_value}")
+        logger.info(f"Normalized {keyword} value for {norm_county}: {normalized_value}")
         
         if pd.notna(normalized_value):
             trends[f"monthly_average_{keyword}"] = normalized_value
@@ -269,6 +305,28 @@ def get_latest_trends_for_metro(metro_area):
         else:
             logger.warning(f"Normalized value is NaN for {keyword} in {metro_area}")
     return trends
+
+def _detect_target_month():
+    """Detect the target prediction month from the prediction data files."""
+    keywords = ['CalFresh', 'FoodBank']
+    for keyword in keywords:
+        sample_file = os.path.join(PREDICTION_BASE_DIR, keyword, "Bakersfield.csv")
+        if os.path.exists(sample_file):
+            try:
+                with open(sample_file, 'r') as f:
+                    for line in f:
+                        stripped = line.strip()
+                        if stripped and stripped[0].isdigit() and '-' in stripped:
+                            date_str = stripped.split(',')[0]
+                            try:
+                                date_obj = pd.to_datetime(date_str)
+                                return date_obj + pd.DateOffset(months=1)
+                            except (ValueError, pd.errors.ParserError):
+                                continue
+            except Exception:
+                continue
+    # Fallback to current month
+    return pd.Timestamp(datetime.now().replace(day=1))
 
 def list_available_counties():
     """List all available counties that have population and metro mapping"""
@@ -300,15 +358,21 @@ def save_predictions_to_csv(predictions, output_file="src/data/finalPrediction.c
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         
-        # Create DataFrame
-        df = pd.DataFrame([
-            {
+        # Create DataFrame — predictions can be (value, lower, upper) tuples or plain values
+        rows = []
+        for (county, date), pred in predictions.items():
+            if isinstance(pred, tuple):
+                val, lower, upper = pred
+            else:
+                val, lower, upper = pred, None, None
+            rows.append({
                 'date': date,
                 'county': county,
-                'predicted_applications': pred
-            }
-            for (county, date), pred in predictions.items()
-        ])
+                'predicted_applications': val,
+                'lower_bound': lower,
+                'upper_bound': upper,
+            })
+        df = pd.DataFrame(rows)
         
         # Add population data for z-score calculation
         try:
@@ -354,21 +418,21 @@ def save_predictions_to_csv(predictions, output_file="src/data/finalPrediction.c
             
             # Calculate z-scores using historical county-specific rate statistics
             df['z_score'] = (df['predicted_rate'] - df['mean']) / df['std']
-            df['z_score'] = df['z_score'].fillna(0)  # Fill NaN with 0 if no historical data
-            
+            # Leave NaN z-scores as NaN — zscore_to_flag() will map them to 'Gray'
+
         except Exception as e:
             print(f"Warning: Could not load historical data for county-specific z-scores: {str(e)}")
             print("Falling back to prediction-based z-scores...")
-            
-            # Fallback: Calculate z-scores for predictions (original method)
-        mean_apps = df['predicted_applications'].mean()
-        std_apps = df['predicted_applications'].std()
-        
-        # Handle case where all predictions are the same (std = 0)
-        if std_apps == 0:
-            df['z_score'] = 0
-        else:
-            df['z_score'] = (df['predicted_applications'] - mean_apps) / std_apps
+
+            # Fallback: only runs when historical data fails to load
+            df['predicted_rate'] = df['predicted_applications'] / df['Population']
+            mean_apps = df['predicted_applications'].mean()
+            std_apps = df['predicted_applications'].std()
+
+            if std_apps == 0:
+                df['z_score'] = np.nan
+            else:
+                df['z_score'] = (df['predicted_applications'] - mean_apps) / std_apps
         
         # Add flag based on z-score
         df['flag'] = df['z_score'].apply(zscore_to_flag)
@@ -404,14 +468,17 @@ def generate_predictions(counties=None):
             with open(sample_file, 'r') as f:
                 lines = f.readlines()
                 for line in lines:
-                    if line.strip().startswith('2025-'):
-                        # Extract the month from the first date found
-                        date_str = line.split(',')[0]
-                        prediction_month = pd.to_datetime(date_str)
-                        target_month = prediction_month + pd.DateOffset(months=1)
-                        print(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
-                        print(f"Predicting for: {target_month.strftime('%B %Y')}")
-                        break
+                    stripped = line.strip()
+                    if stripped and stripped[0].isdigit() and '-' in stripped:
+                        date_str = stripped.split(',')[0]
+                        try:
+                            prediction_month = pd.to_datetime(date_str)
+                            target_month = prediction_month + pd.DateOffset(months=1)
+                            print(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
+                            print(f"Predicting for: {target_month.strftime('%B %Y')}")
+                            break
+                        except (ValueError, pd.errors.ParserError):
+                            continue
         except Exception as e:
             print(f"Could not detect prediction month: {e}")
     
@@ -431,17 +498,17 @@ def generate_predictions(counties=None):
                 print(f"Skipping {county}: No metro area found")
                 continue
             
-            trends = get_latest_trends_for_metro(metro)
+            trends = get_latest_trends_for_metro(metro, county=county)
             if not trends:
                 print(f"Skipping {county}: No trend data available")
                 continue
-            
+
             population = get_population_for_county(county)
             median_income = get_median_income_for_county(county)
             # Use prediction data trends to predict target month
-            prediction = predict_next_month(trends, population, median_income, prediction_month=8)
-            predictions[(county, prediction_date_str)] = round(prediction, 2)
-            print(f"{county}: {prediction:.2f}")
+            prediction, lower, upper = predict_next_month(trends, population, median_income, prediction_month=target_month.month)
+            predictions[(county, prediction_date_str)] = (round(prediction, 2), round(lower, 2), round(upper, 2))
+            print(f"{county}: {prediction:.2f} [{lower:.2f} - {upper:.2f}]")
             
         except Exception as e:
             print(f"Error predicting for {county}: {str(e)}")
@@ -458,21 +525,23 @@ def main():
                 print(f"No metro area found for county: {county}")
                 sys.exit(1)
 
-            # Get latest trends for the metro area
-            trends = get_latest_trends_for_metro(metro)
+            # Get latest trends for the metro area, normalized by this county's population
+            trends = get_latest_trends_for_metro(metro, county=county)
             if not trends:
                 print(f"No trend data available for {metro}")
                 sys.exit(1)
 
             population = get_population_for_county(county)
             median_income = get_median_income_for_county(county)
-            # Make prediction (August = month 8)
-            prediction = predict_next_month(trends, population, median_income, prediction_month=8)
-            print(f"Predicted SNAP applications for {county} next month: {prediction:.2f}")
-            
+
+            # Detect target month from prediction data
+            target_month = _detect_target_month()
+            prediction, lower, upper = predict_next_month(trends, population, median_income, prediction_month=target_month.month)
+            print(f"Predicted SNAP applications for {county} ({target_month.strftime('%B %Y')}): {prediction:.2f} [{lower:.2f} - {upper:.2f}]")
+
             # Save to CSV
             save_predictions_to_csv({
-                (county, datetime.now().strftime("%Y-%m-01")): round(prediction, 2)
+                (county, target_month.strftime("%Y-%m-01")): (round(prediction, 2), round(lower, 2), round(upper, 2))
             })
 
         except Exception as e:
