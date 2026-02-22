@@ -161,19 +161,20 @@ def get_latest_trends_for_metro(metro_area, county=None):
             try:
                 with open(sample_file, 'r') as f:
                     lines = f.readlines()
+                    last_date = None
                     for line in lines:
                         stripped = line.strip()
-                        # Match any date-like line (YYYY-MM-DD) instead of hardcoded year
-                        if stripped and stripped[0].isdigit() and '-' in stripped:
-                            date_str = stripped.split(',')[0]
+                        if not stripped or ',' not in stripped:
+                            continue
+                        date_part = stripped.split(',')[0].strip().strip('"')
+                        if date_part and date_part[0].isdigit() and '-' in date_part:
                             try:
-                                date_obj = pd.to_datetime(date_str)
-                                prediction_month = date_obj
-                                logger.info(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
-                                break
+                                last_date = pd.to_datetime(date_part)
                             except (ValueError, pd.errors.ParserError):
                                 continue
-                    if prediction_month:
+                    if last_date is not None:
+                        prediction_month = last_date
+                        logger.info(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
                         break
             except Exception as e:
                 logger.warning(f"Could not detect prediction month: {e}")
@@ -205,10 +206,11 @@ def get_latest_trends_for_metro(metro_area, county=None):
             with open(prediction_file, 'r') as f:
                 lines = f.readlines()
             
-            # Find the line that contains the actual data header (starts with Day,)
+            # Find the line that contains the actual data header
             header_line_idx = None
             for i, line in enumerate(lines):
-                if line.strip().startswith('Day,'):
+                s = line.strip()
+                if s.startswith('Day,') or s.startswith('"Time"') or s.startswith('Time,'):
                     header_line_idx = i
                     break
             
@@ -313,16 +315,20 @@ def _detect_target_month():
         sample_file = os.path.join(PREDICTION_BASE_DIR, keyword, "Bakersfield.csv")
         if os.path.exists(sample_file):
             try:
+                last_date = None
                 with open(sample_file, 'r') as f:
                     for line in f:
                         stripped = line.strip()
-                        if stripped and stripped[0].isdigit() and '-' in stripped:
-                            date_str = stripped.split(',')[0]
+                        if not stripped or ',' not in stripped:
+                            continue
+                        date_part = stripped.split(',')[0].strip().strip('"')
+                        if date_part and date_part[0].isdigit() and '-' in date_part:
                             try:
-                                date_obj = pd.to_datetime(date_str)
-                                return date_obj + pd.DateOffset(months=1)
+                                last_date = pd.to_datetime(date_part)
                             except (ValueError, pd.errors.ParserError):
                                 continue
+                if last_date is not None:
+                    return last_date + pd.DateOffset(months=1)
             except Exception:
                 continue
     # Fallback to current month
@@ -467,18 +473,22 @@ def generate_predictions(counties=None):
         try:
             with open(sample_file, 'r') as f:
                 lines = f.readlines()
+                last_date = None
                 for line in lines:
                     stripped = line.strip()
-                    if stripped and stripped[0].isdigit() and '-' in stripped:
-                        date_str = stripped.split(',')[0]
+                    if not stripped or ',' not in stripped:
+                        continue
+                    date_part = stripped.split(',')[0].strip().strip('"')
+                    if date_part and date_part[0].isdigit() and '-' in date_part:
                         try:
-                            prediction_month = pd.to_datetime(date_str)
-                            target_month = prediction_month + pd.DateOffset(months=1)
-                            print(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
-                            print(f"Predicting for: {target_month.strftime('%B %Y')}")
-                            break
+                            last_date = pd.to_datetime(date_part)
                         except (ValueError, pd.errors.ParserError):
                             continue
+                if last_date is not None:
+                    prediction_month = last_date
+                    target_month = prediction_month + pd.DateOffset(months=1)
+                    print(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
+                    print(f"Predicting for: {target_month.strftime('%B %Y')}")
         except Exception as e:
             print(f"Could not detect prediction month: {e}")
     
