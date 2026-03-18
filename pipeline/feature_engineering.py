@@ -466,6 +466,316 @@ def _print_summary(df: pd.DataFrame, registry: pd.DataFrame):
     print(f"{'─'*65}\n")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Feature dictionary
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Full documentation for every modelling feature.
+# Fields: name, group, definition, formula, source, dtype
+FEATURE_DICTIONARY = [
+    # ── Base ──────────────────────────────────────────────────────────────────
+    dict(
+        name="Population",
+        group="Base",
+        definition="County resident population used as denominator for per-capita rate and as a standalone size feature.",
+        formula="Raw value from source; no transformation applied.",
+        source="popData.csv (US Census / CA DOF estimate)",
+        dtype="integer",
+    ),
+    dict(
+        name="Median_Income",
+        group="Base",
+        definition="Median household income for the county. Higher income counties typically have lower SNAP demand.",
+        formula="Raw value from source; no transformation applied.",
+        source="MedianIncome.csv (ACS 5-year estimate, $)",
+        dtype="float",
+    ),
+    dict(
+        name="monthly_average_CalFresh",
+        group="Base",
+        definition="Mean Google Trends interest score for the search term 'CalFresh' within the county's DMA for the prediction month. "
+                   "Higher values indicate more people actively searching for SNAP enrollment.",
+        formula="mean(weekly Trends index) over all weeks in the calendar month, per DMA.",
+        source="src/data/trends/CalFresh/{DMA}.csv (Google Trends, 0–100 scale)",
+        dtype="float",
+    ),
+    dict(
+        name="monthly_average_FoodBank",
+        group="Base",
+        definition="Mean Google Trends interest score for 'FoodBank' within the county's DMA. "
+                   "Captures broader food-insecurity signal beyond formal SNAP enrollment.",
+        formula="mean(weekly Trends index) over all weeks in the calendar month, per DMA.",
+        source="src/data/trends/FoodBank/{DMA}.csv (Google Trends, 0–100 scale)",
+        dtype="float",
+    ),
+    dict(
+        name="month",
+        group="Base",
+        definition="Calendar month of the observation. Captures seasonal patterns in SNAP applications "
+                   "(e.g. summer peaks in agricultural counties).",
+        formula="date.month  [integer 1–12]",
+        source="Derived from SNAP application date",
+        dtype="integer",
+    ),
+    # ── Lag — SNAP rate ───────────────────────────────────────────────────────
+    dict(
+        name="rate_lag1",
+        group="Lag (SNAP rate)",
+        definition="SNAP application rate from 1 month prior for the same county. "
+                   "The single most predictive feature: SNAP demand is strongly autocorrelated month-to-month.",
+        formula="SNAP_Application_Rate(t-1)  [grouped by county, sorted by date]",
+        source="Derived from SNAPData.csv + popData.csv",
+        dtype="float",
+    ),
+    dict(
+        name="rate_lag2",
+        group="Lag (SNAP rate)",
+        definition="SNAP application rate from 2 months prior. Extends autocorrelation signal and helps "
+                   "detect medium-term trends.",
+        formula="SNAP_Application_Rate(t-2)  [grouped by county, sorted by date]",
+        source="Derived from SNAPData.csv + popData.csv",
+        dtype="float",
+    ),
+    dict(
+        name="rate_lag3",
+        group="Lag (SNAP rate)",
+        definition="SNAP application rate from 3 months prior. Captures quarterly cycle effects.",
+        formula="SNAP_Application_Rate(t-3)  [grouped by county, sorted by date]",
+        source="Derived from SNAPData.csv + popData.csv",
+        dtype="float",
+    ),
+    # ── Lag — Google Trends ───────────────────────────────────────────────────
+    dict(
+        name="calfresh_lag1",
+        group="Lag (Trends)",
+        definition="CalFresh search interest from 1 month prior. Captures the leading-indicator effect: "
+                   "people search before they apply, so last month's searches predict this month's applications.",
+        formula="monthly_average_CalFresh(t-1)  [grouped by county, sorted by date]",
+        source="Derived from src/data/trends/CalFresh/",
+        dtype="float",
+    ),
+    dict(
+        name="calfresh_lag2",
+        group="Lag (Trends)",
+        definition="CalFresh search interest from 2 months prior. Extends the leading-indicator window.",
+        formula="monthly_average_CalFresh(t-2)  [grouped by county, sorted by date]",
+        source="Derived from src/data/trends/CalFresh/",
+        dtype="float",
+    ),
+    dict(
+        name="foodbank_lag1",
+        group="Lag (Trends)",
+        definition="FoodBank search interest from 1 month prior.",
+        formula="monthly_average_FoodBank(t-1)  [grouped by county, sorted by date]",
+        source="Derived from src/data/trends/FoodBank/",
+        dtype="float",
+    ),
+    dict(
+        name="foodbank_lag2",
+        group="Lag (Trends)",
+        definition="FoodBank search interest from 2 months prior.",
+        formula="monthly_average_FoodBank(t-2)  [grouped by county, sorted by date]",
+        source="Derived from src/data/trends/FoodBank/",
+        dtype="float",
+    ),
+    # ── Rolling windows ───────────────────────────────────────────────────────
+    dict(
+        name="rate_roll3_mean",
+        group="Rolling",
+        definition="3-month trailing mean of SNAP application rate. Smooths month-to-month noise and "
+                   "represents the local level of food-assistance demand.",
+        formula="mean(SNAP_Application_Rate(t-2), SNAP_Application_Rate(t-1), SNAP_Application_Rate(t))  "
+                "[rolling window=3, min_periods=2, grouped by county]",
+        source="Derived from SNAPData.csv + popData.csv",
+        dtype="float",
+    ),
+    dict(
+        name="rate_roll3_std",
+        group="Rolling",
+        definition="3-month trailing standard deviation of SNAP application rate. "
+                   "High values indicate an unstable or rapidly changing county — a risk signal.",
+        formula="std(SNAP_Application_Rate over trailing 3 months)  [rolling window=3, min_periods=2, grouped by county]",
+        source="Derived from SNAPData.csv + popData.csv",
+        dtype="float",
+    ),
+    dict(
+        name="calfresh_roll3",
+        group="Rolling",
+        definition="3-month trailing mean of CalFresh search index. More stable estimate of sustained "
+                   "search interest than the raw monthly value.",
+        formula="mean(monthly_average_CalFresh over trailing 3 months)  [rolling window=3, min_periods=2, grouped by county]",
+        source="Derived from src/data/trends/CalFresh/",
+        dtype="float",
+    ),
+    dict(
+        name="foodbank_roll3",
+        group="Rolling",
+        definition="3-month trailing mean of FoodBank search index.",
+        formula="mean(monthly_average_FoodBank over trailing 3 months)  [rolling window=3, min_periods=2, grouped by county]",
+        source="Derived from src/data/trends/FoodBank/",
+        dtype="float",
+    ),
+    # ── Momentum ──────────────────────────────────────────────────────────────
+    dict(
+        name="calfresh_momentum",
+        group="Momentum",
+        definition="Month-over-month change in CalFresh search interest. Positive = rising interest "
+                   "(leading signal of increased demand). Negative = falling interest.",
+        formula="monthly_average_CalFresh(t) - monthly_average_CalFresh(t-1)",
+        source="Derived from src/data/trends/CalFresh/",
+        dtype="float",
+    ),
+    dict(
+        name="foodbank_momentum",
+        group="Momentum",
+        definition="Month-over-month change in FoodBank search interest.",
+        formula="monthly_average_FoodBank(t) - monthly_average_FoodBank(t-1)",
+        source="Derived from src/data/trends/FoodBank/",
+        dtype="float",
+    ),
+    # ── Seasonality ───────────────────────────────────────────────────────────
+    dict(
+        name="month_sin",
+        group="Seasonality",
+        definition="Sine component of cyclical month encoding. Paired with month_cos, these two features "
+                   "represent month as a point on a unit circle so that December and January are adjacent "
+                   "(distance ≈ 0) rather than far apart (distance = 11 on a raw 1–12 scale).",
+        formula="sin(2π × month / 12)",
+        source="Derived from SNAP application date",
+        dtype="float",
+    ),
+    dict(
+        name="month_cos",
+        group="Seasonality",
+        definition="Cosine component of cyclical month encoding. Together with month_sin uniquely identifies "
+                   "each calendar month while preserving the circular annual structure.",
+        formula="cos(2π × month / 12)",
+        source="Derived from SNAP application date",
+        dtype="float",
+    ),
+    dict(
+        name="quarter",
+        group="Seasonality",
+        definition="Calendar quarter (1=Jan–Mar, 2=Apr–Jun, 3=Jul–Sep, 4=Oct–Dec). "
+                   "Coarser seasonal grouping that captures broad agricultural and policy cycles.",
+        formula="floor((month - 1) / 3) + 1",
+        source="Derived from SNAP application date",
+        dtype="integer",
+    ),
+    # ── Population transform ──────────────────────────────────────────────────
+    dict(
+        name="log_population",
+        group="Population",
+        definition="Base-10 logarithm of county population. California counties span four orders of "
+                   "magnitude (Alpine: 1,043 → Los Angeles: 9,550,505). Log compression brings this into "
+                   "a 3.0–7.0 range comparable to other features, preventing large-county dominance.",
+        formula="log₁₀(Population)",
+        source="popData.csv (US Census / CA DOF estimate)",
+        dtype="float",
+    ),
+    # ── Income transforms ─────────────────────────────────────────────────────
+    dict(
+        name="log_income",
+        group="Income",
+        definition="Base-10 logarithm of median household income. The relationship between income and SNAP "
+                   "demand is non-linear: a $10K difference matters more at $55K than at $150K. "
+                   "Log scaling captures this diminishing sensitivity.",
+        formula="log₁₀(Median_Income)",
+        source="MedianIncome.csv (ACS 5-year estimate)",
+        dtype="float",
+    ),
+    dict(
+        name="income_quintile",
+        group="Income",
+        definition="Income quintile of the county relative to all California counties in this dataset "
+                   "(1 = lowest 20%, 5 = highest 20%). Allows the model to learn step-change effects at "
+                   "wealth thresholds without assuming a smooth relationship across the full income range.",
+        formula="pd.qcut(Median_Income across CA counties, q=5, labels=[1,2,3,4,5])",
+        source="MedianIncome.csv (ACS 5-year estimate)",
+        dtype="integer",
+    ),
+]
+
+
+def generate_feature_dictionary(
+    features_csv: str = None,
+    output_csv: str = None,
+) -> pd.DataFrame:
+    """
+    Build the feature dictionary DataFrame, save it as CSV, and print a
+    Markdown table suitable for inclusion in a paper or report.
+
+    Args:
+        features_csv: Path to the engineered features CSV (used to compute
+                      value ranges from actual data). Defaults to config.FEATURES_CSV.
+        output_csv:   Where to write the dictionary CSV.
+                      Defaults to config.FEATURE_DICTIONARY_CSV.
+
+    Returns:
+        Feature dictionary as a DataFrame.
+    """
+    if features_csv is None:
+        features_csv = config.FEATURES_CSV
+    if output_csv is None:
+        output_csv = config.FEATURE_DICTIONARY_CSV
+
+    # Build base dictionary DataFrame
+    df_dict = pd.DataFrame(FEATURE_DICTIONARY)
+
+    # Annotate with observed value ranges from the actual feature dataset
+    if os.path.exists(features_csv):
+        df_feat = pd.read_csv(features_csv)
+        ranges = {}
+        for col in df_dict["name"]:
+            if col in df_feat.columns:
+                s = df_feat[col].dropna()
+                ranges[col] = f"{s.min():.4g} – {s.max():.4g}"
+            else:
+                ranges[col] = "N/A"
+        df_dict["observed_range"] = df_dict["name"].map(ranges)
+    else:
+        df_dict["observed_range"] = "N/A (features.csv not found)"
+
+    # Save CSV
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    df_dict.to_csv(output_csv, index=False)
+    logger.info(f"  Feature dictionary → {output_csv}")
+
+    # Print Markdown table
+    _print_markdown_table(df_dict)
+
+    return df_dict
+
+
+def _print_markdown_table(df_dict: pd.DataFrame) -> None:
+    """Print a Markdown table of all features for copy-paste into a paper."""
+
+    print("\n" + "=" * 80)
+    print("  FEATURE DICTIONARY — MARKDOWN TABLE")
+    print("=" * 80)
+    print()
+
+    # Group into sections for readability
+    groups = df_dict["group"].unique()
+    for group in groups:
+        rows = df_dict[df_dict["group"] == group]
+        print(f"### {group}\n")
+        print("| Feature | Definition | Formula | Source | Range |")
+        print("|---|---|---|---|---|")
+        for _, row in rows.iterrows():
+            # Escape pipe characters inside cells
+            def esc(s):
+                return str(s).replace("|", "\\|").replace("\n", " ")
+            print(
+                f"| `{row['name']}` "
+                f"| {esc(row['definition'])} "
+                f"| `{esc(row['formula'])}` "
+                f"| {esc(row['source'])} "
+                f"| {esc(row['observed_range'])} |"
+            )
+        print()
+
+
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -473,3 +783,4 @@ if __name__ == "__main__":
                         datefmt="%H:%M:%S")
     config.ensure_output_dirs()
     engineer_features()
+    generate_feature_dictionary()
