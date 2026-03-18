@@ -106,6 +106,10 @@ def main():
     from pipeline.stage2_build_features import build_training_data
     run_stage("Build Features", build_training_data, 2, args, specific_stages)
 
+    # ── Stage 2b: Feature engineering ────────────────────────────────────────
+    from pipeline.feature_engineering import engineer_features
+    run_stage("Feature Engineering", engineer_features, 25, args, specific_stages)
+
     # ── Stage 3: Train model ──────────────────────────────────────────────────
     from pipeline.stage3_train import train_and_save
     run_stage("Train Model", train_and_save, 3, args, specific_stages)
@@ -128,6 +132,8 @@ def main():
     logger.info(f"  PIPELINE COMPLETE  ({total:.1f}s total)")
     logger.info("=" * 60)
     logger.info(f"  Training data:     {config.TRAINING_DATA_CSV}")
+    logger.info(f"  Feature dataset:   {config.FEATURES_CSV}")
+    logger.info(f"  Feature registry:  {config.FEATURE_REGISTRY_CSV}")
     logger.info(f"  Model:             {config.MODEL_PKL}")
     logger.info(f"  Walk-forward:      {config.WF_OVERALL_JSON}")
     logger.info(f"  Predictions:       {config.PREDICTIONS_CSV}")

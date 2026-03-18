@@ -22,6 +22,8 @@ PREDICTION_DIR    = os.path.join(RAW_DATA_ROOT, "prediction")
 
 # ── Generated output paths ────────────────────────────────────────────────────
 TRAINING_DATA_CSV      = os.path.join(OUTPUTS_ROOT, "data", "training_data.csv")
+FEATURES_CSV           = os.path.join(OUTPUTS_ROOT, "data", "features.csv")
+FEATURE_REGISTRY_CSV   = os.path.join(OUTPUTS_ROOT, "data", "feature_registry.csv")
 SCALING_PARAMS_JSON    = os.path.join(OUTPUTS_ROOT, "data", "trend_scaling_params.json")
 MODEL_PKL              = os.path.join(OUTPUTS_ROOT, "models", "xgboost_tuned.pkl")
 INSAMPLE_METRICS_JSON  = os.path.join(OUTPUTS_ROOT, "metrics", "insample_metrics.json")
