@@ -181,8 +181,8 @@ def train_and_save() -> dict:
     """
     logger.info("=== STAGE 3: TRAIN MODEL ===")
 
-    df = pd.read_csv(config.TRAINING_DATA_CSV)
-    logger.info(f"  Loaded training data: {df.shape}")
+    df = pd.read_csv(config.MODELLING_CSV)
+    logger.info(f"  Loaded: {config.MODELLING_CSV}  {df.shape}")
 
     X, y, feature_cols = prepare_xy(df)
 
@@ -206,9 +206,8 @@ def train_and_save() -> dict:
         logger.info(f"    {row['feature']}: {row['importance']:.4f}")
 
     # Walk-forward MAE for confidence intervals (embedded in model bundle)
-    df_clean = df.copy()
-    mask = df_clean[feature_cols].notna().all(axis=1) & df_clean[config.TARGET_COL].notna()
-    wf_mae = _quick_walkforward_mae(df_clean[mask].copy(), feature_cols)
+    mask = df[feature_cols].notna().all(axis=1) & df[config.TARGET_COL].notna()
+    wf_mae = _quick_walkforward_mae(df[mask].copy(), feature_cols)
 
     # Feature ranges for drift detection
     feature_ranges = compute_feature_ranges(X)

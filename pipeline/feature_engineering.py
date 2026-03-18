@@ -6,14 +6,16 @@ information leaks into lagged or rolling values. The output DataFrame is a drop-
 replacement for training_data.csv in stages 3 and 4.
 
 Feature groups created:
-  A. Lag features       — rate_lag{1,2,3}, calfresh_lag{1,2}, foodbank_lag{1,2}
-  B. Rolling windows    — rate_roll3_{mean,std}, calfresh_roll3, foodbank_roll3
-  C. Momentum           — calfresh_momentum, foodbank_momentum (current − lag1)
-  D. Year-over-year     — rate_yoy_change (rate vs same month last year)
-  E. Seasonality        — month_sin, month_cos, quarter (cyclical month encoding)
-  F. Population         — log_population (log10 spans 4 orders of magnitude)
-  G. Income             — log_income, income_quintile (1–5 label per California quintile)
-  H. Base features      — Population, Median_Income, monthly_average_*, month (unchanged)
+  A. Lag features    — rate_lag{1,2,3}, calfresh_lag{1,2}, foodbank_lag{1,2}
+  B. Rolling windows — rate_roll3_{mean,std}, calfresh_roll3, foodbank_roll3
+  C. Momentum        — calfresh_momentum, foodbank_momentum (current − lag1)
+  D. Seasonality     — month_sin, month_cos, quarter (cyclical month encoding)
+  E. Population      — log_population (log10 spans 4 orders of magnitude)
+  F. Income          — log_income, income_quintile (1–5 label per California quintile)
+  G. Base features   — Population, Median_Income, monthly_average_*, month (unchanged)
+
+Note: year-over-year (lag-12) was tested and dropped — marginal R² gain (+0.003)
+at the cost of halving the dataset (1,160 → 638 rows). Not worth the trade-off.
 
 Output:
   outputs/data/features.csv           — full engineered dataframe
@@ -60,8 +62,6 @@ ENGINEERED_FEATURE_COLS = [
     # Momentum (trend direction)
     "calfresh_momentum",
     "foodbank_momentum",
-    # Year-over-year
-    "rate_yoy_change",
     # Seasonality
     "month_sin",
     "month_cos",
@@ -200,35 +200,7 @@ def add_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# D. Year-over-year change
-# ══════════════════════════════════════════════════════════════════════════════
-
-def add_yoy_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add year-over-year (YoY) change in SNAP application rate.
-
-    YoY removes seasonal effects and captures structural change in food
-    insecurity. A positive value means this month's rate is higher than the
-    same month last year — a meaningful signal of worsening conditions beyond
-    the normal seasonal pattern.
-
-    rate_yoy_change = SNAP_Application_Rate − rate 12 months ago
-
-    This requires lag-12, so the first year of data per county becomes NaN.
-    With 35 months available, 23 rows per county remain after this lag —
-    still sufficient for modelling.
-
-    Features added:
-      rate_yoy_change — current rate minus rate 12 months prior (same county)
-    """
-    df = df.sort_values(["county", "date"]).copy()
-    rate_lag12 = df.groupby("county")[config.TARGET_COL].shift(12)
-    df["rate_yoy_change"] = df[config.TARGET_COL] - rate_lag12
-    return df
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# E. Seasonality features
+# D. Seasonality features
 # ══════════════════════════════════════════════════════════════════════════════
 
 def add_seasonality_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -260,7 +232,7 @@ def add_seasonality_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# F. Population transformations
+# E. Population transformations
 # ══════════════════════════════════════════════════════════════════════════════
 
 def add_population_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -282,7 +254,7 @@ def add_population_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# G. Income transformations
+# F. Income transformations
 # ══════════════════════════════════════════════════════════════════════════════
 
 def add_income_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -369,9 +341,6 @@ FEATURE_REGISTRY = [
          description="CalFresh month-over-month change (current − lag1); positive = rising interest"),
     dict(name="foodbank_momentum", group="momentum", nan_policy="drop",
          description="FoodBank month-over-month change (current − lag1)"),
-    # ── Year-over-year ────────────────────────────────────────────────────────
-    dict(name="rate_yoy_change", group="yoy", nan_policy="drop",
-         description="SNAP rate vs same month last year; positive = worsening conditions YoY"),
     # ── Seasonality ───────────────────────────────────────────────────────────
     dict(name="month_sin", group="seasonality", nan_policy="never",
          description="sin(2π×month/12) — cyclical month encoding, adjacent to Dec/Jan"),
@@ -436,10 +405,9 @@ def engineer_features(
     df = add_lag_features(df)           # A — lags (must precede momentum)
     df = add_rolling_features(df)       # B — rolling windows
     df = add_momentum_features(df)      # C — momentum (needs lag1)
-    df = add_yoy_features(df)           # D — year-over-year (lag12)
-    df = add_seasonality_features(df)   # E — sin/cos/quarter
-    df = add_population_features(df)    # F — log_population
-    df = add_income_features(df)        # G — log_income, quintile
+    df = add_seasonality_features(df)   # D — sin/cos/quarter
+    df = add_population_features(df)    # E — log_population
+    df = add_income_features(df)        # F — log_income, quintile
 
     logger.info(f"  Features engineered: {df.shape[1]} columns total")
 

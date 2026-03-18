@@ -149,8 +149,8 @@ def evaluate() -> dict:
     """
     logger.info("=== STAGE 4: EVALUATE (WALK-FORWARD VALIDATION) ===")
 
-    df = pd.read_csv(config.TRAINING_DATA_CSV)
-    logger.info(f"  Loaded training data: {df.shape}")
+    df = pd.read_csv(config.MODELLING_CSV)
+    logger.info(f"  Loaded: {config.MODELLING_CSV}  {df.shape}")
 
     feature_cols = [f for f in config.FEATURE_COLS if f in df.columns]
     missing = set(config.FEATURE_COLS) - set(feature_cols)
