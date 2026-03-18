@@ -50,3 +50,18 @@ node_modules/
 # Model files (large pickle files)
 *.pkl
 county_models/
+
+# Pipeline generated outputs (reproduced by run_pipeline.py)
+outputs/
+
+# Untracked diagnostic / scratch files
+src/data/interpolation_analysis.csv
+src/data/interpolation_quality.csv
+model_comparison_output.log
+
+# Leftover empty directories from cleanup
+scripts/archive/
+model_comparison_results/
+xgboost_tuning_results/
+artifacts/figures/
+artifacts/poster/
