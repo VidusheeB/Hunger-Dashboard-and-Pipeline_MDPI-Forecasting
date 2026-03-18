@@ -2,10 +2,10 @@ import pandas as pd
 import pickle
 import sys
 import os
+import json
 import logging
 from datetime import datetime, timedelta
-from utils import scale_trends, normalize_trends_by_population  # <-- Import both scaling functions
-import numpy as np # Added for np.nan
+import numpy as np
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +15,7 @@ MODELS_DIR = "county_models"
 COUNTY_METRO_MAP = "src/data/county_to_metro.csv"
 POP_DATA_FILE = "src/data/popData.csv"
 PREDICTION_BASE_DIR = "src/data/prediction"
+SCALING_PARAMS_FILE = "src/data/trend_scaling_params.json"
 
 # Always load the global model
 
@@ -72,9 +73,8 @@ def predict_next_month(trends_dict, population, median_income, prediction_month=
     # Ensure rate is never negative
     predicted_rate = max(0, predicted_rate)
 
-    # Confidence interval based on normal consecutive walk-forward MAE (rate units)
-    # From walk_forward_production.py - XGBoost (tuned): MAE = 0.000877
-    BACKTEST_MAE = 0.000877
+    # Confidence interval based on walk-forward MAE saved during training
+    BACKTEST_MAE = model_info.get("walkforward_mae", 0.000877)
     lower_rate = max(0, predicted_rate - BACKTEST_MAE)
     upper_rate = predicted_rate + BACKTEST_MAE
 
@@ -131,182 +131,141 @@ def get_median_income_for_county(county):
         print(f"Warning: Could not load median income data: {str(e)}, using fallback $60,000")
         return 60000
 
+def _load_scaling_params():
+    """Load per-DMA training averages saved by build_training_data.py."""
+    if not os.path.exists(SCALING_PARAMS_FILE):
+        logger.warning(f"Scaling params not found at {SCALING_PARAMS_FILE}. Run build_training_data.py first.")
+        return {}
+    with open(SCALING_PARAMS_FILE, "r") as f:
+        return json.load(f)
+
+
+def _read_prediction_csv(pred_file):
+    """
+    Read a prediction CSV (new format: quoted header "Time","CalFresh").
+    Returns DataFrame with columns: date (datetime), value (float).
+    """
+    with open(pred_file, 'r') as f:
+        lines = f.readlines()
+
+    header_idx = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith('Day,') or s.startswith('"Time"') or s.startswith('Time,'):
+            header_idx = i
+            break
+
+    if header_idx is None:
+        return pd.DataFrame(columns=["date", "value"])
+
+    df = pd.read_csv(pred_file, skiprows=header_idx)
+    if len(df.columns) < 2:
+        return pd.DataFrame(columns=["date", "value"])
+
+    df.columns = ["date", "value"] + list(df.columns[2:])
+    df = df[["date", "value"]]
+
+    # Filter out non-date rows
+    known_non_data = {
+        'Category: All categories', 'Region:', 'Week', 'Day', 'Month', 'Year',
+        'United States', 'State', 'City', 'Metro', 'Subregion', 'Search term',
+        'Note:', 'Notes:', 'Interest over time', 'Time', 'Geo', 'isPartial',
+        'date', 'value', 'Average', 'Total', 'N/A', 'nan', '', None
+    }
+    df = df[~df['date'].astype(str).str.strip().isin(known_non_data)]
+
+    df['date']  = pd.to_datetime(df['date'], errors='coerce')
+    df['value'] = pd.to_numeric(df['value'], errors='coerce')
+    df = df.dropna(subset=['date', 'value'])
+    return df
+
+
 def get_latest_trends_for_metro(metro_area, county=None):
     """
-    Load the latest trend data from the prediction folder for each keyword.
-    Scale the prediction data to the training data using scale_trends, then normalize by population.
-    Dynamically detects the month of prediction data and predicts for the next month.
+    Load prediction trend data for a metro area, scale it to the training data's
+    absolute 0-100 reference frame, and return feature values ready for the model.
 
-    Args:
-        metro_area: The metro area to load trends for.
-        county: The specific county to use for population normalization.
-                If None, falls back to first county in the metro (legacy behavior).
+    Scaling formula (per DMA, per keyword):
+        scaled_value = latest_month_avg * (train_avg / pred_window_avg)
+
+    This preserves the spike signal: if the current month is elevated relative
+    to the prediction window average, the scaled value is proportionally above
+    the training average that the model learned from.
+
+    No population division — trends stay on the 0-100 Google Trends scale.
+    Population is already a separate model feature.
     """
-    trends = {}
-    
-    if os.path.exists(PREDICTION_BASE_DIR):
-        # Use base folders (CalFresh, FoodBank) which contain prediction data
-        keywords = ['CalFresh', 'FoodBank']
-    else:
-        logger.error(f"Prediction base directory {PREDICTION_BASE_DIR} does not exist")
+    if not os.path.exists(PREDICTION_BASE_DIR):
+        logger.error(f"Prediction directory {PREDICTION_BASE_DIR} does not exist")
         return {}
-    
-    logger.info(f"Using prediction data from base folders: {keywords}")
-    
-    # Detect the month of the prediction data
-    prediction_month = None
-    for keyword in keywords:
-        sample_file = os.path.join(PREDICTION_BASE_DIR, keyword, f"Bakersfield.csv")
-        if os.path.exists(sample_file):
-            try:
-                with open(sample_file, 'r') as f:
-                    lines = f.readlines()
-                    last_date = None
-                    for line in lines:
-                        stripped = line.strip()
-                        if not stripped or ',' not in stripped:
-                            continue
-                        date_part = stripped.split(',')[0].strip().strip('"')
-                        if date_part and date_part[0].isdigit() and '-' in date_part:
-                            try:
-                                last_date = pd.to_datetime(date_part)
-                            except (ValueError, pd.errors.ParserError):
-                                continue
-                    if last_date is not None:
-                        prediction_month = last_date
-                        logger.info(f"Detected prediction data month: {prediction_month.strftime('%B %Y')}")
-                        break
-            except Exception as e:
-                logger.warning(f"Could not detect prediction month: {e}")
-    
-    if not prediction_month:
-        logger.warning("Could not detect prediction month, using current month")
-        prediction_month = datetime.now().replace(day=1)
-    
-    # Target month is the month of the last data point (not +1: the last date
-    # in weekly data is the week ending that month, so we predict for that month)
-    target_month = prediction_month.replace(day=1)
-    logger.info(f"Predicting for: {target_month.strftime('%B %Y')}")
-    
-    for keyword in keywords:
-        prediction_file = os.path.join(PREDICTION_BASE_DIR, keyword, f"{metro_area}.csv")
-        training_file = os.path.join("src/data/trends", keyword, f"{metro_area}.csv")
-        
-        if not os.path.exists(prediction_file):
-            logger.warning(f"No prediction file found for {metro_area} in {keyword}")
-            continue
-        if not os.path.exists(training_file):
-            logger.warning(f"No training file found for {metro_area} in {keyword}")
-            continue
-        # Load both training and prediction data
-        df_train = pd.read_csv(training_file, header=None, names=['date', 'train_value'])
-        
-        # Handle Google Trends export format for prediction data
-        try:
-            # Read the file to find the actual data header
-            with open(prediction_file, 'r') as f:
-                lines = f.readlines()
-            
-            # Find the line that contains the actual data header
-            header_line_idx = None
-            for i, line in enumerate(lines):
-                s = line.strip()
-                if s.startswith('Day,') or s.startswith('"Time"') or s.startswith('Time,'):
-                    header_line_idx = i
-                    break
-            
-            if header_line_idx is None:
-                logger.warning(f"No data header found in {prediction_file}")
-                continue
-            
-            # Read the data starting from the header line
-            df_pred = pd.read_csv(prediction_file, skiprows=header_line_idx)
-            
-            # The first column should be 'Day', rename it to 'date'
-            # The second column should be the trend data, rename it to 'pred_value'
-            if len(df_pred.columns) >= 2:
-                df_pred.columns = ['date', 'pred_value'] + list(df_pred.columns[2:])
-                df_pred = df_pred[['date', 'pred_value']]  # Keep only date and value columns
-            else:
-                logger.warning(f"Unexpected column structure in {prediction_file}")
-                continue
-                
-        except Exception as e:
-            logger.warning(f"Error reading prediction file {prediction_file}: {e}")
-            continue
-        
-        # Remove Google Trends headers/metadata rows from prediction data
-        known_headers = [
-            'Category: All categories', 'Region:', 'Week', 'Day', 'Month', 'Year',
-            'United States', 'State', 'City', 'Metro', 'Subregion', 'Search term',
-            'Note:', 'Notes:', 'Interest over time', 'Interest by region', 'Top related queries', 'Rising related queries', 'Top', 'Rising', 'Keyword', 'Keywords', 'Time', 'Geo', 'isPartial', 'date', 'value', 'values', 'Average', 'Total', 'N/A', 'nan', '', None
-        ]
-        df_pred = df_pred[~df_pred['date'].astype(str).str.strip().isin(known_headers)]
-        
-        # Ensure both columns are numeric
-        df_train['train_value'] = pd.to_numeric(df_train['train_value'], errors='coerce')
-        df_pred['pred_value'] = pd.to_numeric(df_pred['pred_value'], errors='coerce')
-        df_train = df_train[df_train['train_value'].notna()]
-        df_pred = df_pred[df_pred['pred_value'].notna()]
-        
-        # Now parse dates
-        df_train['date'] = pd.to_datetime(df_train['date'])
-        df_pred['date'] = pd.to_datetime(df_pred['date'], errors='coerce')
-        df_pred = df_pred[df_pred['date'].notna()]  # Only keep rows with valid dates
-        
-        # Aggregate daily prediction data to monthly averages
-        if not df_pred.empty:
-            df_pred['year_month'] = df_pred['date'].dt.to_period('M')
-            monthly_pred = df_pred.groupby('year_month')['pred_value'].mean().reset_index()
-            monthly_pred['date'] = monthly_pred['year_month'].dt.to_timestamp()
-            monthly_pred = monthly_pred[['date', 'pred_value']]
-            df_pred = monthly_pred
-            logger.info(f"Processed {keyword} data for {metro_area}: {len(df_pred)} monthly records")
-        else:
-            logger.warning(f"No valid prediction data for {keyword} in {metro_area}")
-            continue
-        
-        # Merge on date, keeping all dates
-        df_merged = pd.merge(df_train, df_pred, on='date', how='outer')
-        # Sort by date
-        df_merged = df_merged.sort_values('date')
-        # Scale prediction data to training data
-        df_scaled = scale_trends(df_merged.copy(), 'train_value', 'pred_value')
-        
-        # Debug: Check if we have any valid prediction values after scaling
-        valid_pred_values = df_scaled['pred_value'].dropna()
-        if valid_pred_values.empty:
-            logger.warning(f"No valid prediction values after scaling for {keyword} in {metro_area}")
-            continue
-        
-        latest_pred_value = valid_pred_values.iloc[-1]
-        logger.info(f"Latest {keyword} value for {metro_area}: {latest_pred_value}")
-        
-        # --- Population normalization ---
-        # Use the specific county passed in, so normalization matches the prediction target
-        norm_county = county
-        if norm_county is None:
-            county_map_df = pd.read_csv('src/data/county_to_metro.csv')
-            county_map_df.columns = county_map_df.columns.str.strip()
-            counties_for_metro = county_map_df[county_map_df['metro_area'] == metro_area]['county'].tolist()
-            if not counties_for_metro:
-                logger.warning(f"No county found for metro area {metro_area}")
-                continue
-            norm_county = counties_for_metro[0]
-            logger.warning(f"No county specified, falling back to '{norm_county}' for normalization")
-        # Create a DataFrame for normalization
-        norm_df = pd.DataFrame({'county': [norm_county], 'trend': [latest_pred_value]})
-        norm_df = normalize_trends_by_population(norm_df, county_col='county', trend_cols=['trend'])
 
-        # Debug: Check the normalized value
-        normalized_value = norm_df['trend'].iloc[0]
-        logger.info(f"Normalized {keyword} value for {norm_county}: {normalized_value}")
-        
-        if pd.notna(normalized_value):
-            trends[f"monthly_average_{keyword}"] = normalized_value
-            logger.info(f"Successfully added monthly_average_{keyword} trend for {metro_area}: {normalized_value}")
+    scaling_params = _load_scaling_params()
+    keywords = ['CalFresh', 'FoodBank']
+    trends = {}
+
+    # Detect prediction month from Bakersfield file (used for logging only)
+    prediction_month = None
+    for kw in keywords:
+        sample = os.path.join(PREDICTION_BASE_DIR, kw, "Bakersfield.csv")
+        if os.path.exists(sample):
+            df_sample = _read_prediction_csv(sample)
+            if not df_sample.empty:
+                last_date = df_sample['date'].max()
+                prediction_month = last_date.replace(day=1)
+                logger.info(f"Detected prediction month: {prediction_month.strftime('%B %Y')}")
+                break
+
+    if not prediction_month:
+        prediction_month = datetime.now().replace(day=1)
+        logger.warning("Could not detect prediction month, using current month")
+
+    for keyword in keywords:
+        pred_file = os.path.join(PREDICTION_BASE_DIR, keyword, f"{metro_area}.csv")
+        if not os.path.exists(pred_file):
+            logger.warning(f"No prediction file for {metro_area}/{keyword}")
+            continue
+
+        df_pred = _read_prediction_csv(pred_file)
+        if df_pred.empty:
+            logger.warning(f"Empty prediction data for {metro_area}/{keyword}")
+            continue
+
+        # Monthly aggregate (zeros kept — they are real low-activity signal)
+        df_pred['ym'] = df_pred['date'].dt.to_period('M')
+        monthly = df_pred.groupby('ym')['value'].mean().reset_index()
+        monthly['date'] = monthly['ym'].dt.to_timestamp()
+
+        if monthly.empty:
+            continue
+
+        # Latest month's value
+        latest_month_avg = monthly['value'].iloc[-1]
+
+        # Prediction window average (all months in file)
+        pred_window_avg = monthly['value'].mean()
+
+        # Training average for this DMA/keyword
+        train_avg = scaling_params.get(keyword, {}).get(metro_area)
+        if train_avg is None:
+            logger.warning(f"No training avg for {metro_area}/{keyword} in scaling params")
+            continue
+
+        # Scale: align prediction window to training reference frame
+        if pred_window_avg == 0:
+            # All-zero prediction window — no search signal, use training avg directly
+            scaled_value = train_avg
+            logger.info(f"{metro_area}/{keyword}: all-zero prediction window, using train_avg={train_avg:.2f}")
         else:
-            logger.warning(f"Normalized value is NaN for {keyword} in {metro_area}")
+            scaled_value = latest_month_avg * (train_avg / pred_window_avg)
+
+        logger.info(
+            f"{metro_area}/{keyword}: latest={latest_month_avg:.1f}, "
+            f"pred_avg={pred_window_avg:.1f}, train_avg={train_avg:.1f}, "
+            f"scaled={scaled_value:.2f}"
+        )
+
+        trends[f"monthly_average_{keyword}"] = scaled_value
+
     return trends
 
 def _detect_target_month():

@@ -2,12 +2,18 @@
 Retraining Pipeline for SNAP Prediction Model
 
 Run this script when new SNAP application data arrives to rebuild the model
-end-to-end. It runs the full pipeline in order:
-  1. Aggregate Google Trends + SNAP data
-  2. Interpolate missing SNAP values
-  3. Scale training data (normalize, add features)
-  4. Train the XGBoost model
-  5. Generate predictions
+end-to-end.
+
+  Step 1: build_training_data.py  — joins trends + SNAP + population/income,
+                                    produces training_data.csv and
+                                    trend_scaling_params.json
+  Step 2: train_model.py          — trains XGBoost on training_data.csv,
+                                    saves global_model.pkl
+  Step 3: predict.py              — generates finalPrediction.csv using the
+                                    new model and current prediction CSVs
+
+NOTE: Before running this pipeline, if new prediction trend CSVs were uploaded,
+run preprocess_prediction_data.py first to create any missing DMA placeholder files.
 
 Usage:
     python scripts/retrain.py
@@ -17,15 +23,13 @@ import subprocess
 import sys
 import os
 
-SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPTS_DIR  = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPTS_DIR)
 
 PIPELINE_STEPS = [
-    ("1. Aggregate trends data", "create_aggregate_trends.py"),
-    ("2. Interpolate missing SNAP data", "interpolate_missing_snap_data.py"),
-    ("3. Scale training data", "create_scaled_training_data.py"),
-    ("4. Train model", "train_model.py"),
-    ("5. Generate predictions", "predict.py"),
+    ("1. Build training data", "build_training_data.py"),
+    ("2. Train model",         "train_model.py"),
+    ("3. Generate predictions","predict.py"),
 ]
 
 
@@ -71,8 +75,9 @@ def main():
         sys.exit(1)
     else:
         print("Pipeline completed successfully!")
-        print("Model saved to: county_models/global_model.pkl")
-        print("Predictions saved to: src/data/finalPrediction.csv")
+        print("Training data: src/data/training_data.csv")
+        print("Model saved:   county_models/global_model.pkl")
+        print("Predictions:   src/data/finalPrediction.csv")
 
 
 if __name__ == "__main__":

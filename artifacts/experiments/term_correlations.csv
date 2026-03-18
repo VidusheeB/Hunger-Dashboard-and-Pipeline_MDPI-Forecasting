@@ -1,0 +1,11 @@
+term,col,correlation,source
+Supplemental Nutrition Assistance Program,trend_supplemental_nutrition_assistance_program,0.2914910200215426,AllTerms
+food stamps,trend_food_stamps,0.28403072051939926,AllTerms
+food bank,trend_food_bank,0.2708425898174095,AllTerms
+monthly_average_FoodBank,monthly_average_FoodBank,0.21046604196037222,Original
+EBT card,trend_ebt_card,0.15648638006699805,AllTerms
+SNAP benefits,trend_snap_benefits,0.1527887251400166,AllTerms
+apply for CalFresh,trend_apply_for_calfresh,-0.12817549965057895,AllTerms
+monthly_average_CalFresh,monthly_average_CalFresh,-0.11943460079923086,Original
+food pantry near me,trend_food_pantry_near_me,-0.09165890255685184,AllTerms
+CalFresh,trend_calfresh,-0.05524714805747453,AllTerms

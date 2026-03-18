@@ -1,0 +1,36 @@
+{
+  "CalFresh": {
+    "Bakersfield": 57.7203,
+    "ChicoRedding": 47.1176,
+    "Eureka": 7.0878,
+    "FresnoVisalia": 64.9595,
+    "LosAngeles": 65.123,
+    "MedfordKlamathFalls": 0.5405,
+    "MontereySalinas": 49.9608,
+    "PalmSprings": 32.7959,
+    "Reno": 0.5405,
+    "SacramentoStocktonModesto": 68.0473,
+    "SanDiego": 73.4932,
+    "SanFranciscoOaklandSanJose": 70.1689,
+    "SantaBarbaraSantaMariaSanLuisObispo": 41.4068,
+    "Yuma": 5.9149,
+    "YumaElCentro": 5.9149
+  },
+  "FoodBank": {
+    "Bakersfield": 2.1486,
+    "ChicoRedding": 3.9243,
+    "Eureka": 0.5405,
+    "FresnoVisalia": 54.3419,
+    "LosAngeles": 64.8351,
+    "MedfordKlamathFalls": 16.7014,
+    "MontereySalinas": 41.677,
+    "PalmSprings": 22.1946,
+    "Reno": 30.4716,
+    "SacramentoStocktonModesto": 51.4865,
+    "SanDiego": 65.2797,
+    "SanFranciscoOaklandSanJose": 61.6054,
+    "SantaBarbaraSantaMariaSanLuisObispo": 35.8838,
+    "Yuma": 6.2459,
+    "YumaElCentro": 6.2459
+  }
+}
