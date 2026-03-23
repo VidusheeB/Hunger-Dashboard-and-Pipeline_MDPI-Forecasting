@@ -65,7 +65,23 @@ def load_scaling_params() -> dict:
             f"Scaling params not found at {config.SCALING_PARAMS_JSON}. Run stage 2 first."
         )
     with open(config.SCALING_PARAMS_JSON) as f:
-        return json.load(f)
+        params = json.load(f)
+
+    assert isinstance(params, dict) and len(params) > 0, (
+        f"Scaling params file is empty or malformed: {config.SCALING_PARAMS_JSON}"
+    )
+    for kw in config.KEYWORDS:
+        assert kw in params, (
+            f"Missing keyword '{kw}' in scaling params — re-run stage 2"
+        )
+        assert len(params[kw]) > 0, (
+            f"No DMA entries for keyword '{kw}' in scaling params"
+        )
+    logger.info(
+        f"  Loaded scaling params: "
+        + ", ".join(f"{kw} ({len(params[kw])} DMAs)" for kw in params)
+    )
+    return params
 
 
 # ── Target month detection ────────────────────────────────────────────────────
@@ -141,10 +157,29 @@ def scale_prediction_trends(
         logger.info(f"  {metro_area}/{keyword}: all-zero window → using train_avg={train_avg:.2f}")
         return float(train_avg)
 
-    scaled = latest_month_avg * (train_avg / pred_window_avg)
+    scale_factor = train_avg / pred_window_avg
+    scaled = latest_month_avg * scale_factor
+
+    # ── Assertions ────────────────────────────────────────────────────────────
+    assert scaled >= 0, (
+        f"Negative scaled trend for {metro_area}/{keyword}: "
+        f"latest={latest_month_avg:.2f}, factor={scale_factor:.4f} → {scaled:.4f}"
+    )
+    assert train_avg > 0, (
+        f"Training average is zero for {metro_area}/{keyword} — "
+        f"check that training trend data was loaded correctly"
+    )
+    if scaled > 500:
+        logger.warning(
+            f"  {metro_area}/{keyword}: scaled={scaled:.1f} > 500 — "
+            f"unusually large; latest={latest_month_avg:.1f}, "
+            f"pred_avg={pred_window_avg:.1f}, train_avg={train_avg:.2f}, factor={scale_factor:.4f}"
+        )
+
     logger.debug(
         f"  {metro_area}/{keyword}: latest={latest_month_avg:.1f}, "
-        f"pred_avg={pred_window_avg:.1f}, train_avg={train_avg:.2f}, scaled={scaled:.2f}"
+        f"pred_avg={pred_window_avg:.1f}, train_avg={train_avg:.2f}, "
+        f"factor={scale_factor:.4f}, scaled={scaled:.2f}"
     )
     return scaled
 
