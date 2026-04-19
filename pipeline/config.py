@@ -18,6 +18,7 @@ COUNTY_METRO_FILE = os.path.join(RAW_DATA_ROOT, "county_to_metro.csv")
 POP_FILE          = os.path.join(RAW_DATA_ROOT, "popData.csv")
 INCOME_FILE       = os.path.join(RAW_DATA_ROOT, "MedianIncome.csv")
 TRENDS_DIR        = os.path.join(RAW_DATA_ROOT, "trends")
+LAUS_FILE         = os.path.join(TRENDS_DIR, "laus_county_unemployment_2017_2025.csv")
 
 # Maps pipeline keyword name → actual folder name under TRENDS_DIR.
 # Each folder contains one sub-directory per DMA, with year-chunk CSVs inside.
@@ -63,32 +64,23 @@ BASE_FEATURE_COLS = [
     "month",
 ]
 
-# Engineered feature list used by stages 3 and 4 (train + evaluate).
-# Validated by walk-forward: R²=0.91, MAE=0.000381 vs R²=0.77, MAE=0.000683 base.
-# Year-over-year (lag-12) was tested and excluded — halved dataset for +0.003 R².
+# Deployable feature list used by stages 3 and 4 (train + evaluate).
+# SNAP-derived lag/rolling features are intentionally excluded because official
+# SNAP outcomes are delayed in deployment.  The model uses demographics,
+# Google Trends lags/rolling/momentum, BLS LAUS unemployment, and seasonality.
 FEATURE_COLS = [
-    # Base
     "Population", "Median_Income",
-    "monthly_average_CalFresh", "monthly_average_FoodBank", "month",
-    # Lags — SNAP rate
-    "rate_lag1", "rate_lag2", "rate_lag3",
-    # Lags — Google Trends
     "calfresh_lag1", "calfresh_lag2",
     "foodbank_lag1", "foodbank_lag2",
     "foodstamps_lag1", "foodstamps_lag2",
     "snaptopic_lag1", "snaptopic_lag2",
-    # Rolling windows
-    "rate_roll3_mean", "rate_roll3_std",
     "calfresh_roll3", "foodbank_roll3",
     "foodstamps_roll3", "snaptopic_roll3",
-    # Momentum
     "calfresh_momentum", "foodbank_momentum",
     "foodstamps_momentum", "snaptopic_momentum",
-    # Seasonality
-    "month_sin", "month_cos", "quarter",
-    # Transforms
+    "unemployment_rate", "unemployment_rate_lag1",
+    "month_sin", "month_cos", "quarter", "month",
     "log_population", "log_income",
-    # income_quintile removed: zero XGBoost importance confirmed in experiments/feature_importance.py
 ]
 
 # Which CSV stages 3 and 4 read from
@@ -97,18 +89,17 @@ MODELLING_CSV = FEATURES_CSV  # set to TRAINING_DATA_CSV to use base features on
 TARGET_COL = "SNAP_Application_Rate"  # = SNAP_Applications / Population
 
 # ── XGBoost tuned hyperparameters ─────────────────────────────────────────────
-# Determined via RandomizedSearch + GridSearch in experiments/walk_forward_production.py.
-# Production walk-forward results: R²=0.338, MAE=0.000877, sMAPE=13.46%
-# (vs default XGBoost R²=-0.037 — tuning is essential for this dataset)
+# Tuned for the deployable no-SNAP-lag feature set in
+# experiments/tune_deployable_model.py.
 XGBOOST_PARAMS = dict(
-    n_estimators=500,
-    max_depth=8,
-    learning_rate=0.01,
-    min_child_weight=6,
-    subsample=0.8,
-    colsample_bytree=0.9,
-    reg_lambda=4,
-    reg_alpha=0,
+    n_estimators=799,
+    max_depth=9,
+    learning_rate=0.056808,
+    min_child_weight=4,
+    subsample=0.8729982015899902,
+    colsample_bytree=0.6559009934437239,
+    reg_lambda=1.9993115185633124,
+    reg_alpha=0.014724539502011025,
     random_state=42,
     n_jobs=-1,
 )
@@ -122,77 +113,6 @@ WALK_FORWARD_MIN_MONTHS = 12
 # Rows where SNAP_Applications > OUTLIER_THRESHOLD × county median are dropped.
 # Catches data-entry spikes (e.g. Madera Jan 2023: 11,090 vs typical ~1,000).
 OUTLIER_THRESHOLD = 3.0
-
-# ── Early-warning alert layer ─────────────────────────────────────────────────
-# All thresholds here are operating parameters — tune them against historical
-# spike recall / false-positive trade-offs using:
-#   python experiments/evaluate_alerts.py
-#
-# ROLLING_WINDOW_W
-#   Number of recent months used to compute each county's local baseline.
-#   Shorter windows (6) are more sensitive to recent shifts; longer (12) are
-#   more stable.  12 months captures a full seasonal cycle.
-ALERT_ROLLING_WINDOW_W = 12
-
-# ALERT_ALPHA
-#   Weight on the prediction z-score vs the Trends anomaly score.
-#   warning_score = alpha * prediction_zscore_recent
-#                 + (1 - alpha) * combined_trend_anomaly
-#   0.0 = Trends-only, 1.0 = prediction-only, 0.5 = equal weight.
-#
-#   Calibrated via experiments/calibrate_alpha.py on 4,647 county-months
-#   (47 counties, Apr 2017 – Dec 2025). Alpha=0.5 selected to maximize
-#   episode-level early detection rate within a surveillance-appropriate
-#   FPR tolerance (≤ ~6%). Raises early detection from 29.0% (α=0.7) to
-#   34.7% (α=0.5) at a cost of FPR rising from 2.5% → 5.6% — an acceptable
-#   tradeoff for a food-security early-warning dashboard where false negatives
-#   (missed surges) are far costlier than false positives (unnecessary reviews).
-ALERT_ALPHA = 0.5
-
-# TREND_COMBINE_METHOD
-#   How to combine CalFresh and FoodBank z-scores into one trend anomaly score.
-#   "max"  — take the higher of the two (flags if either keyword spikes)
-#   "mean" — average them (requires both to move to flag)
-ALERT_TREND_COMBINE = "max"
-
-# ALERT_THRESHOLDS
-#   warning_score thresholds for dashboard colours.
-#   green  : score < YELLOW_THRESHOLD
-#   yellow : YELLOW_THRESHOLD <= score < RED_THRESHOLD  (elevated risk / watchlist)
-#   red    : score >= RED_THRESHOLD                      (high risk / act now)
-#
-#   Calibrated from the empirical warning-score distribution produced by
-#   evaluate_alerts.py (run on 4,647 county-months, 47 counties).
-#
-#   With the Trends anomaly term in the composite score the distribution shifts
-#   right relative to a prediction-only score.  The prior defaults (yellow=0.5,
-#   red=1.0) sat below the 85th percentile of scored months, causing the Red
-#   flag to fire on ~19 % of months and inflating false positives by ~7×.
-#
-#   New values are anchored to empirical percentiles of the scored distribution:
-#     1.0  ≈ 85th percentile  → yellow (elevated risk, watchlist)
-#     1.6  ≈ 90th percentile  → red    (high risk, operational alert)
-#
-#   DO NOT lower these back toward 0.5/1.0 without rerunning evaluate_alerts.py
-#   first — the Trends anomaly term raises the score distribution and requires
-#   a commensurately higher threshold to preserve precision.
-ALERT_YELLOW_THRESHOLD = 1.0
-ALERT_RED_THRESHOLD    = 1.6
-
-# ALERT_MIN_HISTORY
-#   Minimum number of non-NaN SNAP rate observations a county must have in
-#   the rolling window before a z-score is computed.  Below this the county
-#   gets warning_score = NaN and flag = "Gray".
-ALERT_MIN_HISTORY = 6
-
-# SPIKE_DEFINITION_K
-#   A month is labelled a "spike" for evaluation purposes when:
-#     actual_rate > rolling_mean_rate + k * rolling_std_rate
-#   Used only in evaluate_alerts.py, not in production predictions.
-SPIKE_K = 1.5
-
-# Output path for alert evaluation results
-ALERT_EVAL_CSV = os.path.join(OUTPUTS_ROOT, "metrics", "alert_evaluation.csv")
 
 # ── Convenience: ensure all output directories exist ─────────────────────────
 def ensure_output_dirs():

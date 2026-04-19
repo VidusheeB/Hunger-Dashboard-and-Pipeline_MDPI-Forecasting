@@ -2,27 +2,21 @@
 stage5_predict.py — Generate forward predictions for all counties.
 
 For each county, this stage:
-  1. Identifies the target prediction month from the latest prediction CSVs
-  2. Scales current-month Google Trends to the training reference frame
-  3. Assembles the full 24-feature vector from prediction trends + historical data
+  1. Identifies the target SNAP month as one month after the latest Trends CSV
+  2. Scales the latest available Google Trends month to the training frame
+  3. Assembles the deployable feature vector from prediction trends + historical data
   4. Runs the model and converts the predicted rate to application count
   5. Builds a confidence interval using walkforward_mae from the model bundle
-  6. Runs the early-warning alert layer (alert_layer.py) to compute warning signals
 
 Feature assembly strategy:
-  The model is trained on 24 features including lags and rolling windows.
-  At prediction time the upcoming month's SNAP data doesn't exist yet, so lag
-  features are computed from the most recent rows in features.csv:
+  The model is trained on deployable features only: demographics, Google Trends
+  lags/rolling/momentum, BLS unemployment, and seasonality.  SNAP-derived lag
+  and rolling features are intentionally not assembled or used.
 
-    rate_lag1         ← most recent known SNAP_Application_Rate (last row in features.csv)
-    rate_lag2         ← last_row["rate_lag1"]  (shifting one step back)
-    rate_lag3         ← last_row["rate_lag2"]
-    rate_roll3_mean   ← mean of last 3 known rates
-    rate_roll3_std    ← std  of last 3 known rates
-    calfresh_lag1     ← last_row["monthly_average_CalFresh"]
-    calfresh_lag2     ← last_row["calfresh_lag1"]
-    calfresh_roll3    ← rolling mean of last 3 known CalFresh values
-    calfresh_momentum ← scaled_current_CalFresh − calfresh_lag1
+    calfresh_lag1     ← scaled CalFresh Trends from t-1
+    calfresh_lag2     ← scaled/historical CalFresh Trends from t-2
+    calfresh_roll3    ← mean CalFresh Trends from t-1, t-2, and t-3
+    calfresh_momentum ← calfresh_lag1 − calfresh_lag2
     foodbank_lag*     ← same pattern as CalFresh
 
   If a county is absent from features.csv (dropped during feature engineering due
@@ -48,7 +42,6 @@ import numpy as np
 import pandas as pd
 
 from pipeline import config
-from pipeline.alert_layer import compute_warning_signals
 from pipeline.stage1_load_raw import (
     load_prediction_trends, load_population, load_income, load_county_metro
 )
@@ -93,8 +86,9 @@ def load_scaling_params() -> dict:
 
 def detect_target_month() -> pd.Timestamp:
     """
-    Determine the prediction target month from the latest date in the
-    Bakersfield prediction CSV.  Falls back to current month.
+    Determine the SNAP target month from the latest date in the Bakersfield
+    prediction CSV. If the latest Trends month is February, the target SNAP
+    month is March, so every model feature is from t-1 or earlier.
     """
     for kw in config.KEYWORDS:
         sample = os.path.join(config.PREDICTION_DIR, kw, "Bakersfield.csv")
@@ -102,8 +96,12 @@ def detect_target_month() -> pd.Timestamp:
             from pipeline.stage1_load_raw import _read_prediction_csv
             df = _read_prediction_csv(sample)
             if not df.empty:
-                target = df["date"].max().replace(day=1)
-                logger.info(f"  Detected prediction month: {target.strftime('%B %Y')}")
+                latest_trends = df["date"].max().replace(day=1)
+                target = latest_trends + pd.DateOffset(months=1)
+                logger.info(
+                    f"  Latest prediction Trends month: {latest_trends.strftime('%B %Y')} "
+                    f"→ target SNAP month: {target.strftime('%B %Y')}"
+                )
                 return target
 
     target = pd.Timestamp(datetime.now().replace(day=1))
@@ -149,6 +147,49 @@ def scale_prediction_trends(
     return scaled
 
 
+def scale_prediction_trend_series(
+    metro_area: str,
+    keyword: str,
+    pred_df: pd.DataFrame,
+    scaling_params: dict,
+) -> Optional[pd.Series]:
+    """
+    Scale all available prediction-window monthly Trends values.
+
+    The returned Series is indexed by actual Trends month. For target SNAP
+    month t, the last value becomes lag1 (t-1), the previous value lag2 (t-2),
+    and the last three values form the trailing roll3.
+    """
+    train_avg = scaling_params.get(keyword, {}).get(metro_area)
+    if train_avg is None or pred_df is None or pred_df.empty:
+        return None
+
+    pred_df = pred_df.copy()
+    pred_df["month"] = pred_df["date"].dt.to_period("M").dt.to_timestamp()
+    monthly = pred_df.groupby("month")["value"].mean().sort_index()
+    if monthly.empty:
+        return None
+
+    pred_window_avg = float(monthly.mean())
+    if pred_window_avg == 0:
+        return pd.Series(float(train_avg), index=monthly.index)
+
+    scaled = monthly * (float(train_avg) / pred_window_avg)
+    return scaled.clip(lower=0)
+
+
+def load_laus_history() -> pd.DataFrame:
+    """Load raw LAUS unemployment history for publication-safe Stage 5 lookup."""
+    if not os.path.exists(config.LAUS_FILE):
+        logger.warning(f"LAUS unemployment file not found: {config.LAUS_FILE}")
+        return pd.DataFrame(columns=["county", "date", "unemployment_rate"])
+
+    laus = pd.read_csv(config.LAUS_FILE, parse_dates=["date"])
+    laus = laus[["county", "date", "unemployment_rate"]].copy()
+    laus["date"] = laus["date"].dt.to_period("M").dt.to_timestamp()
+    return laus.sort_values(["county", "date"]).reset_index(drop=True)
+
+
 # ── Historical feature lookup ─────────────────────────────────────────────────
 
 def _get_county_history(county: str, features_df: pd.DataFrame) -> Optional[pd.DataFrame]:
@@ -179,13 +220,14 @@ def get_features_for_county(
     pop_df: pd.DataFrame,
     income_df: pd.DataFrame,
     features_df: pd.DataFrame,
+    laus_df: pd.DataFrame,
 ) -> Optional[dict]:
     """
-    Build the full 24-feature vector for one county for the target month.
+    Build the deployable feature vector for one county for the target month.
 
-    Uses scaled prediction-window Trends for current-month values, and
-    features.csv for all lag/rolling/momentum features (shifted one period
-    forward so the most recent known month becomes lag-1).
+    Uses scaled prediction-window Trends through target month t-1, plus
+    historical Trends from features.csv when prediction-window data is missing.
+    SNAP-derived lag and rolling features are intentionally excluded.
 
     Returns a dict matching config.FEATURE_COLS, or None if required data
     is missing.
@@ -217,57 +259,65 @@ def get_features_for_county(
         return None
     last = hist.iloc[-1]
 
-    # SNAP rate lags: shift forward one step
-    # last row = December 2025 row → its SNAP rate IS our rate_lag1 for Feb 2026
-    features["rate_lag1"]       = _last(hist["SNAP_Application_Rate"])
-    features["rate_lag2"]       = float(last["rate_lag1"])  if not pd.isna(last.get("rate_lag1", np.nan)) else np.nan
-    features["rate_lag3"]       = float(last["rate_lag2"])  if not pd.isna(last.get("rate_lag2", np.nan)) else np.nan
-    recent_rates = hist["SNAP_Application_Rate"].tail(3).dropna().values
-    features["rate_roll3_mean"] = float(np.mean(recent_rates)) if len(recent_rates) >= 2 else features["rate_lag1"]
-    features["rate_roll3_std"]  = float(np.std(recent_rates))  if len(recent_rates) >= 2 else 0.0
+    # Trend lags and rolling means. Stage 2 stores monthly_average_* on the
+    # SNAP month row, but the value itself comes from the prior Trends month.
+    latest_allowed_trend_month = target_month - pd.DateOffset(months=1)
+    for prefix, keyword, col in [
+        ("calfresh",   "CalFresh",    "monthly_average_CalFresh"),
+        ("foodbank",   "FoodBank",    "monthly_average_FoodBank"),
+        ("foodstamps", "FoodStamps",  "monthly_average_FoodStamps"),
+        ("snaptopic",  "SNAPTopic",   "monthly_average_SNAPTopic"),
+    ]:
+        pred_df = prediction_trends.get(keyword, {}).get(metro_area)
+        pred_series = scale_prediction_trend_series(metro_area, keyword, pred_df, scaling_params)
 
-    # CalFresh lags: shift forward one step
-    features["calfresh_lag1"]   = _last(hist["monthly_average_CalFresh"])
-    features["calfresh_lag2"]   = float(last["calfresh_lag1"]) if not pd.isna(last.get("calfresh_lag1", np.nan)) else np.nan
-    recent_cf = hist["monthly_average_CalFresh"].tail(3).dropna().values
-    features["calfresh_roll3"]  = float(np.mean(recent_cf)) if len(recent_cf) > 0 else np.nan
+        historical_series = pd.Series(dtype=float)
+        if col in hist.columns:
+            historical = hist[["date", col]].dropna().copy()
+            historical["trend_month"] = (
+                pd.to_datetime(historical["date"]).dt.to_period("M").dt.to_timestamp()
+                - pd.DateOffset(months=1)
+            )
+            historical_series = historical.set_index("trend_month")[col].astype(float)
 
-    # FoodBank lags: shift forward one step
-    features["foodbank_lag1"]   = _last(hist["monthly_average_FoodBank"])
-    features["foodbank_lag2"]   = float(last["foodbank_lag1"]) if not pd.isna(last.get("foodbank_lag1", np.nan)) else np.nan
-    recent_fb = hist["monthly_average_FoodBank"].tail(3).dropna().values
-    features["foodbank_roll3"]  = float(np.mean(recent_fb)) if len(recent_fb) > 0 else np.nan
+        pieces = [s for s in [historical_series, pred_series] if s is not None and not s.empty]
+        combined = pd.concat(pieces).sort_index() if pieces else pd.Series(dtype=float)
+        combined = combined[~combined.index.duplicated(keep="last")]
+        combined = combined[combined.index <= latest_allowed_trend_month].dropna()
 
-    # ── Current-month Trends (scaled from prediction folder) ──────────────────
-    for kw in config.KEYWORDS:
-        col = f"monthly_average_{kw}"
-        pred_df = prediction_trends.get(kw, {}).get(metro_area)
+        if combined.empty:
+            logger.warning(f"  No usable Trends history for {metro_area}/{keyword} — skipping {county}")
+            return None
 
-        if pred_df is None or pred_df.empty:
-            # Fallback: use most recent historical value for this DMA
-            hist_val = _last(hist[col]) if col in hist.columns else np.nan
-            if pd.isna(hist_val):
-                logger.warning(f"  No prediction trends and no history for {metro_area}/{kw} — skipping {county}")
-                return None
-            logger.info(f"  {county}: no prediction trends for {kw} — using last known historical value {hist_val:.1f}")
-            features[col] = hist_val
-            continue
+        recent = combined.tail(3)
+        features[f"{prefix}_lag1"] = float(recent.iloc[-1])
+        features[f"{prefix}_lag2"] = float(recent.iloc[-2]) if len(recent) >= 2 else np.nan
+        features[f"{prefix}_roll3"] = float(recent.mean()) if len(recent) >= 2 else np.nan
+        features[f"{prefix}_momentum"] = (
+            features[f"{prefix}_lag1"] - features[f"{prefix}_lag2"]
+            if not pd.isna(features[f"{prefix}_lag2"])
+            else np.nan
+        )
 
-        scaled = scale_prediction_trends(metro_area, kw, pred_df, scaling_params)
-        if scaled is None:
-            # Fallback: scaling params missing (e.g. SanFrancisco/FoodBank) → use last known
-            hist_val = _last(hist[col]) if col in hist.columns else np.nan
-            if pd.isna(hist_val):
-                logger.warning(f"  No scaling params and no history for {metro_area}/{kw} — skipping {county}")
-                return None
-            logger.info(f"  {county}: no scaling params for {kw} — using last known historical value {hist_val:.1f}")
-            features[col] = hist_val
-        else:
-            features[col] = scaled
+    # Preserve raw latest Trends values in case downstream diagnostics inspect them.
+    for prefix, col in [
+        ("calfresh",   "monthly_average_CalFresh"),
+        ("foodbank",   "monthly_average_FoodBank"),
+        ("foodstamps", "monthly_average_FoodStamps"),
+        ("snaptopic",  "monthly_average_SNAPTopic"),
+    ]:
+        features[col] = features.get(f"{prefix}_lag1", np.nan)
 
-    # ── Momentum (current prediction vs last known) ───────────────────────────
-    features["calfresh_momentum"] = features["monthly_average_CalFresh"] - features.get("calfresh_lag1", features["monthly_average_CalFresh"])
-    features["foodbank_momentum"] = features["monthly_average_FoodBank"] - features.get("foodbank_lag1", features["monthly_average_FoodBank"])
+    # ── Unemployment ─────────────────────────────────────────────────────────
+    county_laus = laus_df[laus_df["county"] == county].sort_values("date")
+    if county_laus.empty:
+        features["unemployment_rate"] = _last(hist["unemployment_rate"]) if "unemployment_rate" in hist.columns else np.nan
+        features["unemployment_rate_lag1"] = _last(hist["unemployment_rate_lag1"]) if "unemployment_rate_lag1" in hist.columns else np.nan
+    else:
+        u_t1 = county_laus[county_laus["date"] <= target_month - pd.DateOffset(months=1)]
+        u_t2 = county_laus[county_laus["date"] <= target_month - pd.DateOffset(months=2)]
+        features["unemployment_rate"] = _last(u_t1["unemployment_rate"])
+        features["unemployment_rate_lag1"] = _last(u_t2["unemployment_rate"])
 
     # ── Seasonality ───────────────────────────────────────────────────────────
     m = int(target_month.month)
@@ -279,7 +329,6 @@ def get_features_for_county(
     # ── Log transforms ────────────────────────────────────────────────────────
     features["log_population"] = float(np.log10(max(1, population)))
     features["log_income"]     = float(np.log10(max(1, median_income)))
-    # income_quintile removed from FEATURE_COLS (zero XGBoost importance)
 
     return features
 
@@ -307,6 +356,7 @@ def predict_all_counties(target_month: pd.Timestamp) -> pd.DataFrame:
             f"features.csv not found at {config.FEATURES_CSV}. Run feature engineering first."
         )
     features_df = pd.read_csv(config.FEATURES_CSV, parse_dates=["date"])
+    laus_df = load_laus_history()
     logger.info(
         f"  Historical features: {features_df['county'].nunique()} counties, "
         f"up to {features_df['date'].max().date()}"
@@ -336,7 +386,7 @@ def predict_all_counties(target_month: pd.Timestamp) -> pd.DataFrame:
         features = get_features_for_county(
             county, metro_area, target_month,
             prediction_trends, scaling_params,
-            pop_df, income_df, features_df,
+            pop_df, income_df, features_df, laus_df,
         )
         if features is None:
             skipped += 1
@@ -359,19 +409,6 @@ def predict_all_counties(target_month: pd.Timestamp) -> pd.DataFrame:
         lower_apps = round(lower_rate * population)
         upper_apps = round(upper_rate * population)
 
-        # ── Early-warning alert layer ─────────────────────────────────────────
-        # Pull this county's historical series from features_df (already loaded)
-        hist = features_df[features_df["county"] == county].sort_values("date")
-        signals = compute_warning_signals(
-            county            = county,
-            predicted_rate    = predicted_rate,
-            hist_rate_series  = hist["SNAP_Application_Rate"],
-            scaled_calfresh   = features.get("monthly_average_CalFresh"),
-            scaled_foodbank   = features.get("monthly_average_FoodBank"),
-            calfresh_hist_series = hist["monthly_average_CalFresh"],
-            foodbank_hist_series = hist["monthly_average_FoodBank"],
-        )
-
         rows.append({
             "date":                      target_month.strftime("%Y-%m-%d"),
             "county":                    county,
@@ -381,15 +418,8 @@ def predict_all_counties(target_month: pd.Timestamp) -> pd.DataFrame:
             "lower_bound":               int(lower_apps),
             "upper_bound":               int(upper_apps),
             "Population":                int(population),
-            # Alert layer fields
-            "rolling_mean_rate":         signals["rolling_mean_rate"],
-            "rolling_std_rate":          signals["rolling_std_rate"],
-            "prediction_zscore_recent":  signals["prediction_zscore_recent"],
-            "calfresh_trend_zscore":     signals["calfresh_trend_zscore"],
-            "foodbank_trend_zscore":     signals["foodbank_trend_zscore"],
-            "combined_trend_anomaly":    signals["combined_trend_anomaly"],
-            "warning_score":             signals["warning_score"],
-            "warning_flag":              signals["warning_flag"],
+            "flag":                      "Gray",
+            "warning_flag":              "Gray",
         })
 
     predictions_df = pd.DataFrame(rows)
@@ -419,6 +449,6 @@ def predict() -> pd.DataFrame:
     logger.info(f"  Predictions → {config.PREDICTIONS_CSV}")
 
     flag_counts = predictions_df["warning_flag"].value_counts()
-    logger.info(f"  Warning flag distribution: {flag_counts.to_dict()}")
+    logger.info(f"  Warning flag distribution: {flag_counts.to_dict()} (unscored)")
 
     return predictions_df

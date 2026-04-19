@@ -6,16 +6,16 @@ information leaks into lagged or rolling values. The output DataFrame is a drop-
 replacement for training_data.csv in stages 3 and 4.
 
 Feature groups created:
-  A. Lag features    — rate_lag{1,2,3}, calfresh_lag{1,2}, foodbank_lag{1,2}
-  B. Rolling windows — rate_roll3_{mean,std}, calfresh_roll3, foodbank_roll3
-  C. Momentum        — calfresh_momentum, foodbank_momentum (lag1 − lag2; no same-month)
+  A. Trends lags     — calfresh_lag{1,2}, foodbank_lag{1,2}, etc.
+  B. Trends rolling  — calfresh_roll3, foodbank_roll3, foodstamps_roll3, snaptopic_roll3
+  C. Momentum        — calfresh_momentum, foodbank_momentum, etc. (lag1 − lag2)
   D. Seasonality     — month_sin, month_cos, quarter (cyclical month encoding)
   E. Population      — log_population (log10 spans 4 orders of magnitude)
-  F. Income          — log_income, income_quintile (1–5 label per California quintile)
-  G. Base features   — Population, Median_Income, month (unchanged)
+  F. Income          — log_income
+  G. Unemployment    — BLS LAUS unemployment_rate (t-1) and unemployment_rate_lag1 (t-2)
 
-Note: year-over-year (lag-12) was tested and dropped — marginal R² gain (+0.003)
-at the cost of halving the dataset (1,160 → 638 rows). Not worth the trade-off.
+SNAP-derived lag and rolling features are intentionally not created here.  They
+depend on official SNAP outcomes that are unavailable in the deployment window.
 
 Output:
   outputs/data/features.csv           — full engineered dataframe
@@ -42,11 +42,6 @@ ENGINEERED_FEATURE_COLS = [
     # Base
     "Population",
     "Median_Income",
-    "month",
-    # Lags — SNAP rate
-    "rate_lag1",
-    "rate_lag2",
-    "rate_lag3",
     # Lags — Google Trends
     "calfresh_lag1",
     "calfresh_lag2",
@@ -57,8 +52,6 @@ ENGINEERED_FEATURE_COLS = [
     "snaptopic_lag1",
     "snaptopic_lag2",
     # Rolling windows
-    "rate_roll3_mean",
-    "rate_roll3_std",
     "calfresh_roll3",
     "foodbank_roll3",
     "foodstamps_roll3",
@@ -72,10 +65,13 @@ ENGINEERED_FEATURE_COLS = [
     "month_sin",
     "month_cos",
     "quarter",
+    "month",
+    # Unemployment
+    "unemployment_rate",
+    "unemployment_rate_lag1",
     # Transformed static features
     "log_population",
     "log_income",
-    "income_quintile",
 ]
 
 
@@ -85,13 +81,18 @@ ENGINEERED_FEATURE_COLS = [
 
 def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add lagged versions of SNAP application rate and Google Trends signals.
+    Add lagged versions of Google Trends signals.
+
+    Stage 2 has already joined SNAP month t to Google Trends month t-1 via
+    trend_date = date - 1 month. Therefore the raw monthly_average_* column in
+    each row is already the most recent allowable Trends signal for predicting
+    SNAP applications in that row.
 
     Why lags matter:
-    - SNAP application rate is strongly autocorrelated month-to-month. Knowing
-      last month's rate is the single most predictive feature for this month.
-    - Trends 1–2 months ago capture 'search interest that didn't yet result in
+    - Trends 1-2 months ago capture 'search interest that didn't yet result in
       an application' — a leading indicator effect.
+    - SNAP application-rate lags are deliberately excluded because official
+      SNAP outcomes are delayed in real deployment.
 
     All lags are computed within each county group to prevent values from one
     county appearing as a lag for another. Rows where the lag window extends
@@ -99,13 +100,10 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     by dropping NaN rows before modelling).
 
     Features added:
-      rate_lag1    — SNAP_Application_Rate shifted 1 month back
-      rate_lag2    — SNAP_Application_Rate shifted 2 months back
-      rate_lag3    — SNAP_Application_Rate shifted 3 months back
-      calfresh_lag1 — monthly_average_CalFresh shifted 1 month back
-      calfresh_lag2 — monthly_average_CalFresh shifted 2 months back
-      foodbank_lag1 — monthly_average_FoodBank shifted 1 month back
-      foodbank_lag2 — monthly_average_FoodBank shifted 2 months back
+      calfresh_lag1 — CalFresh Trends at t-1
+      calfresh_lag2 — CalFresh Trends at t-2
+      foodbank_lag1 — FoodBank Trends at t-1
+      foodbank_lag2 — FoodBank Trends at t-2
     """
     df = df.sort_values(["county", "date"]).copy()
 
@@ -113,20 +111,14 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = float("nan")
 
-    for lag in [1, 2, 3]:
-        df[f"rate_lag{lag}"] = (
-            df.groupby("county")[config.TARGET_COL]
-            .shift(lag)
-        )
-
-    for lag in [1, 2]:
-        for kw, col in [
-            ("calfresh",   "monthly_average_CalFresh"),
-            ("foodbank",   "monthly_average_FoodBank"),
-            ("foodstamps", "monthly_average_FoodStamps"),
-            ("snaptopic",  "monthly_average_SNAPTopic"),
-        ]:
-            df[f"{kw}_lag{lag}"] = df.groupby("county")[col].shift(lag)
+    for kw, col in [
+        ("calfresh",   "monthly_average_CalFresh"),
+        ("foodbank",   "monthly_average_FoodBank"),
+        ("foodstamps", "monthly_average_FoodStamps"),
+        ("snaptopic",  "monthly_average_SNAPTopic"),
+    ]:
+        df[f"{kw}_lag1"] = df[col]
+        df[f"{kw}_lag2"] = df.groupby("county")[col].shift(1)
 
     return df
 
@@ -137,7 +129,7 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_rolling_features(df: pd.DataFrame, window: int = 3) -> pd.DataFrame:
     """
-    Add rolling mean and std over the past `window` months (default: 3).
+    Add rolling Google Trends means over the past `window` months (default: 3).
 
     Rolling windows smooth out month-to-month noise and capture the local
     trend level more robustly than a single lag value. A 3-month window is
@@ -148,29 +140,15 @@ def add_rolling_features(df: pd.DataFrame, window: int = 3) -> pd.DataFrame:
     months are available, trading some precision for fewer dropped rows.
 
     Features added:
-      rate_roll3_mean   — 3-month rolling mean of SNAP_Application_Rate
-      rate_roll3_std    — 3-month rolling std  (captures volatility / instability)
       calfresh_roll3    — 3-month rolling mean of CalFresh search index
       foodbank_roll3    — 3-month rolling mean of FoodBank search index
     """
     df = df.sort_values(["county", "date"]).copy()
 
     def rolling_mean(series, w):
-        # shift(1) ensures the window uses only past values (T-1, T-2, T-3),
-        # never the current row — which is the target variable for rate features.
-        return series.shift(1).rolling(window=w, min_periods=2).mean()
-
-    def rolling_std(series, w):
-        return series.shift(1).rolling(window=w, min_periods=2).std()
-
-    df[f"rate_roll{window}_mean"] = (
-        df.groupby("county")[config.TARGET_COL]
-        .transform(lambda s: rolling_mean(s, window))
-    )
-    df[f"rate_roll{window}_std"] = (
-        df.groupby("county")[config.TARGET_COL]
-        .transform(lambda s: rolling_std(s, window))
-    )
+        # Stage 2 already shifted Trends to t-1, so this window covers
+        # t-1, t-2, and t-3 for the SNAP month being predicted.
+        return series.rolling(window=w, min_periods=2).mean()
     for kw, col in [
         ("calfresh",   "monthly_average_CalFresh"),
         ("foodbank",   "monthly_average_FoodBank"),
@@ -308,6 +286,40 @@ def add_income_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_unemployment_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge BLS LAUS county unemployment data with publication-safe lags.
+
+    For a SNAP target month t, the model may only use unemployment from t-1
+    or earlier. The output columns therefore mean:
+      unemployment_rate      = LAUS unemployment at t-1
+      unemployment_rate_lag1 = LAUS unemployment at t-2
+    """
+    if not os.path.exists(config.LAUS_FILE):
+        raise FileNotFoundError(f"LAUS unemployment file not found: {config.LAUS_FILE}")
+
+    laus = pd.read_csv(config.LAUS_FILE, parse_dates=["date"])
+    laus = laus[["county", "date", "unemployment_rate"]].copy()
+    laus["date"] = laus["date"].dt.to_period("M").dt.to_timestamp()
+    laus = laus.sort_values(["county", "date"])
+    laus["unemployment_rate_lag1"] = laus.groupby("county")["unemployment_rate"].shift(2)
+    laus["unemployment_rate"] = laus.groupby("county")["unemployment_rate"].shift(1)
+
+    out = df.copy()
+    out["date"] = pd.to_datetime(out["date"]).dt.to_period("M").dt.to_timestamp()
+    out = out.merge(laus, on=["county", "date"], how="left")
+
+    missing = int(out["unemployment_rate"].isna().sum())
+    if missing:
+        logger.warning(
+            f"  LAUS: {missing:,} rows without unemployment_rate after merge "
+            f"(dropped if modelling features require it)"
+        )
+    else:
+        logger.info("  LAUS merged: publication-safe unemployment coverage = 100%")
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Feature registry
 # ══════════════════════════════════════════════════════════════════════════════
@@ -327,34 +339,45 @@ FEATURE_REGISTRY = [
     dict(name="month",                     group="base",       nan_policy="never",
          description="Calendar month (1–12)"),
     # ── Lag features ──────────────────────────────────────────────────────────
-    dict(name="rate_lag1",    group="lag_rate",  nan_policy="drop",
-         description="SNAP_Application_Rate lagged 1 month (same county)"),
-    dict(name="rate_lag2",    group="lag_rate",  nan_policy="drop",
-         description="SNAP_Application_Rate lagged 2 months"),
-    dict(name="rate_lag3",    group="lag_rate",  nan_policy="drop",
-         description="SNAP_Application_Rate lagged 3 months"),
     dict(name="calfresh_lag1", group="lag_trends", nan_policy="drop",
-         description="monthly_average_CalFresh lagged 1 month"),
+         description="CalFresh Google Trends at t-1 for the SNAP month"),
     dict(name="calfresh_lag2", group="lag_trends", nan_policy="drop",
-         description="monthly_average_CalFresh lagged 2 months"),
+         description="CalFresh Google Trends at t-2 for the SNAP month"),
     dict(name="foodbank_lag1", group="lag_trends", nan_policy="drop",
-         description="monthly_average_FoodBank lagged 1 month"),
+         description="FoodBank Google Trends at t-1 for the SNAP month"),
     dict(name="foodbank_lag2", group="lag_trends", nan_policy="drop",
-         description="monthly_average_FoodBank lagged 2 months"),
+         description="FoodBank Google Trends at t-2 for the SNAP month"),
+    dict(name="foodstamps_lag1", group="lag_trends", nan_policy="drop",
+         description="FoodStamps Google Trends at t-1 for the SNAP month"),
+    dict(name="foodstamps_lag2", group="lag_trends", nan_policy="drop",
+         description="FoodStamps Google Trends at t-2 for the SNAP month"),
+    dict(name="snaptopic_lag1", group="lag_trends", nan_policy="drop",
+         description="SNAPTopic Google Trends at t-1 for the SNAP month"),
+    dict(name="snaptopic_lag2", group="lag_trends", nan_policy="drop",
+         description="SNAPTopic Google Trends at t-2 for the SNAP month"),
     # ── Rolling window features ───────────────────────────────────────────────
-    dict(name="rate_roll3_mean", group="rolling", nan_policy="drop",
-         description="3-month rolling mean of SNAP_Application_Rate (smoothed level)"),
-    dict(name="rate_roll3_std",  group="rolling", nan_policy="drop",
-         description="3-month rolling std of SNAP_Application_Rate (volatility signal)"),
     dict(name="calfresh_roll3",  group="rolling", nan_policy="drop",
          description="3-month rolling mean of CalFresh trends index"),
     dict(name="foodbank_roll3",  group="rolling", nan_policy="drop",
          description="3-month rolling mean of FoodBank trends index"),
+    dict(name="foodstamps_roll3",  group="rolling", nan_policy="drop",
+         description="3-month rolling mean of FoodStamps trends index"),
+    dict(name="snaptopic_roll3",  group="rolling", nan_policy="drop",
+         description="3-month rolling mean of SNAPTopic trends index"),
     # ── Momentum features ─────────────────────────────────────────────────────
     dict(name="calfresh_momentum", group="momentum", nan_policy="drop",
          description="CalFresh change lag1−lag2 (t-1 minus t-2); positive = rising interest, no leakage"),
     dict(name="foodbank_momentum", group="momentum", nan_policy="drop",
          description="FoodBank change lag1−lag2 (t-1 minus t-2)"),
+    dict(name="foodstamps_momentum", group="momentum", nan_policy="drop",
+         description="FoodStamps change lag1−lag2 (t-1 minus t-2)"),
+    dict(name="snaptopic_momentum", group="momentum", nan_policy="drop",
+         description="SNAPTopic change lag1−lag2 (t-1 minus t-2)"),
+    # ── Unemployment ─────────────────────────────────────────────────────────
+    dict(name="unemployment_rate", group="unemployment", nan_policy="drop",
+         description="BLS LAUS county unemployment rate at t-1 for the SNAP month"),
+    dict(name="unemployment_rate_lag1", group="unemployment", nan_policy="drop",
+         description="BLS LAUS county unemployment rate at t-2 for the SNAP month"),
     # ── Seasonality ───────────────────────────────────────────────────────────
     dict(name="month_sin", group="seasonality", nan_policy="never",
          description="sin(2π×month/12) — cyclical month encoding, adjacent to Dec/Jan"),
@@ -368,8 +391,6 @@ FEATURE_REGISTRY = [
     # ── Income transforms ─────────────────────────────────────────────────────
     dict(name="log_income",      group="income", nan_policy="never",
          description="log10(Median_Income); captures diminishing sensitivity at higher incomes"),
-    dict(name="income_quintile", group="income", nan_policy="never",
-         description="Income quintile within CA counties: 1=lowest 20%, 5=highest 20%"),
 ]
 
 
@@ -421,7 +442,8 @@ def engineer_features(
     df = add_momentum_features(df)      # C — momentum (needs lag1)
     df = add_seasonality_features(df)   # D — sin/cos/quarter
     df = add_population_features(df)    # E — log_population
-    df = add_income_features(df)        # F — log_income, quintile
+    df = add_income_features(df)        # F — log_income
+    df = add_unemployment_features(df)  # G — BLS LAUS unemployment
 
     logger.info(f"  Features engineered: {df.shape[1]} columns total")
 
@@ -512,18 +534,18 @@ FEATURE_DICTIONARY = [
     dict(
         name="monthly_average_CalFresh",
         group="Base",
-        definition="Mean Google Trends interest score for the search term 'CalFresh' within the county's DMA for the prediction month. "
-                   "Higher values indicate more people actively searching for SNAP enrollment.",
-        formula="mean(weekly Trends index) over all weeks in the calendar month, per DMA.",
+        definition="Mean Google Trends interest score for 'CalFresh' in the county's DMA during the prior Trends month. "
+                   "Stage 2 joins SNAP month t to Trends month t-1.",
+        formula="mean(weekly Trends index) over trend_date = SNAP month - 1 month, per DMA.",
         source="src/data/trends/CalFresh/{DMA}.csv (Google Trends, 0–100 scale)",
         dtype="float",
     ),
     dict(
         name="monthly_average_FoodBank",
         group="Base",
-        definition="Mean Google Trends interest score for 'FoodBank' within the county's DMA. "
+        definition="Mean Google Trends interest score for 'FoodBank' in the county's DMA during the prior Trends month. "
                    "Captures broader food-insecurity signal beyond formal SNAP enrollment.",
-        formula="mean(weekly Trends index) over all weeks in the calendar month, per DMA.",
+        formula="mean(weekly Trends index) over trend_date = SNAP month - 1 month, per DMA.",
         source="src/data/trends/FoodBank/{DMA}.csv (Google Trends, 0–100 scale)",
         dtype="float",
     ),
@@ -535,33 +557,6 @@ FEATURE_DICTIONARY = [
         formula="date.month  [integer 1–12]",
         source="Derived from SNAP application date",
         dtype="integer",
-    ),
-    # ── Lag — SNAP rate ───────────────────────────────────────────────────────
-    dict(
-        name="rate_lag1",
-        group="Lag (SNAP rate)",
-        definition="SNAP application rate from 1 month prior for the same county. "
-                   "The single most predictive feature: SNAP demand is strongly autocorrelated month-to-month.",
-        formula="SNAP_Application_Rate(t-1)  [grouped by county, sorted by date]",
-        source="Derived from SNAPData.csv + popData.csv",
-        dtype="float",
-    ),
-    dict(
-        name="rate_lag2",
-        group="Lag (SNAP rate)",
-        definition="SNAP application rate from 2 months prior. Extends autocorrelation signal and helps "
-                   "detect medium-term trends.",
-        formula="SNAP_Application_Rate(t-2)  [grouped by county, sorted by date]",
-        source="Derived from SNAPData.csv + popData.csv",
-        dtype="float",
-    ),
-    dict(
-        name="rate_lag3",
-        group="Lag (SNAP rate)",
-        definition="SNAP application rate from 3 months prior. Captures quarterly cycle effects.",
-        formula="SNAP_Application_Rate(t-3)  [grouped by county, sorted by date]",
-        source="Derived from SNAPData.csv + popData.csv",
-        dtype="float",
     ),
     # ── Lag — Google Trends ───────────────────────────────────────────────────
     dict(
@@ -599,25 +594,6 @@ FEATURE_DICTIONARY = [
     ),
     # ── Rolling windows ───────────────────────────────────────────────────────
     dict(
-        name="rate_roll3_mean",
-        group="Rolling",
-        definition="3-month trailing mean of SNAP application rate. Smooths month-to-month noise and "
-                   "represents the local level of food-assistance demand.",
-        formula="mean(SNAP_Application_Rate(t-2), SNAP_Application_Rate(t-1), SNAP_Application_Rate(t))  "
-                "[rolling window=3, min_periods=2, grouped by county]",
-        source="Derived from SNAPData.csv + popData.csv",
-        dtype="float",
-    ),
-    dict(
-        name="rate_roll3_std",
-        group="Rolling",
-        definition="3-month trailing standard deviation of SNAP application rate. "
-                   "High values indicate an unstable or rapidly changing county — a risk signal.",
-        formula="std(SNAP_Application_Rate over trailing 3 months)  [rolling window=3, min_periods=2, grouped by county]",
-        source="Derived from SNAPData.csv + popData.csv",
-        dtype="float",
-    ),
-    dict(
         name="calfresh_roll3",
         group="Rolling",
         definition="3-month trailing mean of CalFresh search index. More stable estimate of sustained "
@@ -641,7 +617,7 @@ FEATURE_DICTIONARY = [
         definition="Change in CalFresh search interest from two months ago to one month ago. "
                    "Positive = rising interest (leading signal of increased demand). Uses lag1−lag2 "
                    "to avoid leakage: same-month Trends are not observable at prediction time.",
-        formula="calfresh_lag1(t-1) - calfresh_lag2(t-2)",
+        formula="calfresh_lag1 - calfresh_lag2",
         source="Derived from src/data/trends/CalFresh/",
         dtype="float",
     ),
@@ -650,8 +626,24 @@ FEATURE_DICTIONARY = [
         group="Momentum",
         definition="Change in FoodBank search interest from two months ago to one month ago. "
                    "Uses lag1−lag2 to avoid leakage.",
-        formula="foodbank_lag1(t-1) - foodbank_lag2(t-2)",
+        formula="foodbank_lag1 - foodbank_lag2",
         source="Derived from src/data/trends/FoodBank/",
+        dtype="float",
+    ),
+    dict(
+        name="unemployment_rate",
+        group="Unemployment",
+        definition="BLS LAUS county unemployment rate from one month before the SNAP target month.",
+        formula="LAUS unemployment_rate shifted 1 month within county before merging to SNAP month t",
+        source="src/data/trends/laus_county_unemployment_2017_2025.csv",
+        dtype="float",
+    ),
+    dict(
+        name="unemployment_rate_lag1",
+        group="Unemployment",
+        definition="BLS LAUS county unemployment rate from two months before the SNAP target month.",
+        formula="LAUS unemployment_rate shifted 2 months within county before merging to SNAP month t",
+        source="src/data/trends/laus_county_unemployment_2017_2025.csv",
         dtype="float",
     ),
     # ── Seasonality ───────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ Note: Stage 1 (load_raw) has no standalone output; it is called by stage 2.
 """
 
 import argparse
+import importlib
 import logging
 import os
 import sys
@@ -81,6 +82,21 @@ def run_stage(name: str, fn, stage_num: int, args, specific_stages: set):
         raise
 
 
+def run_stage_lazy(
+    name: str,
+    module_name: str,
+    fn_name: str,
+    stage_num: int,
+    args,
+    specific_stages: set,
+):
+    if not should_run(stage_num, args, specific_stages):
+        logging.getLogger().info(f"  [SKIP] Stage {stage_num}: {name}")
+        return None
+    module = importlib.import_module(module_name)
+    return run_stage(name, getattr(module, fn_name), stage_num, args, specific_stages)
+
+
 def main():
     setup_logging()
     args = parse_args()
@@ -102,29 +118,13 @@ def main():
 
     pipeline_start = time.time()
 
-    # ── Stage 2: Build training data ─────────────────────────────────────────
-    from pipeline.stage2_build_features import build_training_data
-    run_stage("Build Features", build_training_data, 2, args, specific_stages)
-
-    # ── Stage 2b: Feature engineering ────────────────────────────────────────
-    from pipeline.feature_engineering import engineer_features
-    run_stage("Feature Engineering", engineer_features, 25, args, specific_stages)
-
-    # ── Stage 3: Train model ──────────────────────────────────────────────────
-    from pipeline.stage3_train import train_and_save
-    run_stage("Train Model", train_and_save, 3, args, specific_stages)
-
-    # ── Stage 4: Walk-forward evaluation ─────────────────────────────────────
-    from pipeline.stage4_evaluate import evaluate
-    run_stage("Evaluate (Walk-Forward)", evaluate, 4, args, specific_stages)
-
-    # ── Stage 5: Forward prediction ───────────────────────────────────────────
-    from pipeline.stage5_predict import predict
-    run_stage("Predict", predict, 5, args, specific_stages)
-
-    # ── Stage 6: Generate report figures ─────────────────────────────────────
-    from pipeline.stage6_report import generate_all
-    run_stage("Generate Report", generate_all, 6, args, specific_stages)
+    # ── Pipeline stages ──────────────────────────────────────────────────────
+    run_stage_lazy("Build Features", "pipeline.stage2_build_features", "build_training_data", 2, args, specific_stages)
+    run_stage_lazy("Feature Engineering", "pipeline.feature_engineering", "engineer_features", 25, args, specific_stages)
+    run_stage_lazy("Train Model", "pipeline.stage3_train", "train_and_save", 3, args, specific_stages)
+    run_stage_lazy("Evaluate (Walk-Forward)", "pipeline.stage4_evaluate", "evaluate", 4, args, specific_stages)
+    run_stage_lazy("Predict", "pipeline.stage5_predict", "predict", 5, args, specific_stages)
+    run_stage_lazy("Generate Report", "pipeline.stage6_report", "generate_all", 6, args, specific_stages)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     total = time.time() - pipeline_start

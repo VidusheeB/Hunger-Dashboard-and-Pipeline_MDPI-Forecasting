@@ -6,8 +6,8 @@ Compares two walk-forward XGBoost models:
   B) With-Trends: same + all Google Trends features
 
 Uses the already-tuned hyperparameters from tune_deployable_model.py.
-Statistical test: Diebold-Mariano (1995) on squared forecast errors,
-plus Wilcoxon signed-rank as a non-parametric check.
+Statistical tests: panel-aware Diebold-Mariano (1995) on monthly mean squared
+forecast errors, plus Wilcoxon signed-rank on monthly mean absolute errors.
 """
 
 import json
@@ -17,11 +17,11 @@ import sys
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 from xgboost import XGBRegressor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import config
+from experiments.stat_tests import paired_panel_tests
 from experiments.tune_deployable_model import merge_laus, DEPLOYABLE_FEATURES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
@@ -68,34 +68,6 @@ def walk_forward(df: pd.DataFrame, features: list, params: dict) -> pd.DataFrame
         rows.append(out)
     log.info(f"  Walk-forward: {len(rows)} months | {n_skip} skipped")
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
-
-
-# ── Diebold-Mariano test ──────────────────────────────────────────────────────
-
-def diebold_mariano(e1: np.ndarray, e2: np.ndarray) -> dict:
-    """
-    DM test (Harvey, Leybourne & Newbold 1997 small-sample correction).
-    H0: equal forecast accuracy. Negative z = model 1 is better.
-    Loss differential: d = e1² - e2²  (squared error loss).
-    """
-    d   = e1**2 - e2**2
-    n   = len(d)
-    d_bar = d.mean()
-    # Newey-West variance with lag=1
-    gamma0 = np.var(d, ddof=1)
-    gamma1 = np.cov(d[:-1], d[1:])[0, 1] if n > 2 else 0.0
-    var_d  = (gamma0 + 2 * gamma1) / n
-    if var_d <= 0:
-        return dict(dm_stat=0.0, p_value=1.0, significant_at_05=False)
-    dm = d_bar / np.sqrt(var_d)
-    # HLN small-sample correction
-    k   = 1  # 1-step ahead
-    corr = np.sqrt((n + 1 - 2*k + k*(k-1)/n) / n)
-    dm_adj = dm * corr
-    p   = 2 * (1 - stats.t.cdf(abs(dm_adj), df=n-1))
-    return dict(dm_stat=round(float(dm_adj), 4), p_value=round(float(p), 4),
-                significant_at_05=bool(p < 0.05))
-
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -146,11 +118,16 @@ def main():
     m_no   = metrics(noncovid, "pred_no")
     m_with = metrics(noncovid, "pred_with")
 
-    e_no   = noncovid[TARGET].values - noncovid["pred_no"].values
-    e_with = noncovid[TARGET].values - noncovid["pred_with"].values
-
-    dm     = diebold_mariano(e_no, e_with)
-    wilcox = stats.wilcoxon(np.abs(e_no), np.abs(e_with))
+    paired_tests = paired_panel_tests(
+        noncovid,
+        actual_col=TARGET,
+        model_a_pred_col="pred_no",
+        model_b_pred_col="pred_with",
+        model_a_label="No Trends",
+        model_b_label="With Trends",
+    )
+    dm = paired_tests["diebold_mariano"]
+    wilcox = paired_tests["wilcoxon"]
 
     # ── Print ─────────────────────────────────────────────────────────────────
     sep = "═" * 68
@@ -170,27 +147,29 @@ def main():
     print(f"  {sep}\n")
 
     sig_dm = "✓ significant" if dm["significant_at_05"] else "✗ not significant"
-    print(f"  [1] Diebold-Mariano test (squared error loss, HLN corrected)")
+    print(f"  [1] Diebold-Mariano test (monthly mean squared error, HLN/HAC corrected)")
     print(f"  DM stat = {dm['dm_stat']:+.4f}  p = {dm['p_value']:.4f}  {sig_dm}")
-    print(f"  (negative DM = No-Trends has larger errors = Trends helps)")
+    print(f"  (positive DM = With-Trends has lower squared error)")
 
-    sig_w = "✓ significant" if wilcox.pvalue < 0.05 else "✗ not significant"
-    print(f"\n  [2] Wilcoxon signed-rank test (absolute errors, non-parametric)")
-    print(f"  stat = {wilcox.statistic:.1f}  p = {wilcox.pvalue:.4f}  {sig_w}")
+    sig_w = "✓ significant" if wilcox["significant_at_05_two_sided"] else "✗ not significant"
+    print(f"\n  [2] Wilcoxon signed-rank test (monthly mean absolute error)")
+    print(f"  stat = {wilcox['stat']:.1f}  two-sided p = {wilcox['p_value_two_sided']:.4f}  {sig_w}")
+    print(f"  one-sided p (With-Trends better) = {wilcox['p_value_model_b_better']:.4f}")
 
     print(f"\n{sep}\n")
 
     # Save
     results = dict(
+        statistical_test_unit="forecast month; county losses averaged within month",
+        dm_sign_convention="positive means With-Trends has lower squared error than No-Trends",
         no_trends_features=NO_TRENDS_FEATURES,
         with_trends_features=DEPLOYABLE_FEATURES,
         n_trends_features_added=len(TRENDS_COLS),
         metrics_no_trends=m_no,
         metrics_with_trends=m_with,
+        paired_tests=paired_tests,
         diebold_mariano=dm,
-        wilcoxon=dict(stat=round(float(wilcox.statistic), 2),
-                      p_value=round(float(wilcox.pvalue), 4),
-                      significant_at_05=bool(wilcox.pvalue < 0.05)),
+        wilcoxon=wilcox,
     )
     os.makedirs(os.path.dirname(OUT_JSON), exist_ok=True)
     with open(OUT_JSON, "w") as f:

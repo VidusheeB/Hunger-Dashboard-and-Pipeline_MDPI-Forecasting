@@ -32,10 +32,10 @@ Key question: does Trends compensate for model staleness?
 
 Statistical tests
 -----------------
-  [1] Trends gain at gap=0 (Diebold-Mariano + Wilcoxon): the main no-gap benchmark
+  [1] Trends gain at gap=0 (month-clustered Diebold-Mariano + Wilcoxon): the main no-gap benchmark
   [2] Spearman ρ(gap, ΔR²): does monotonicity hold as gap increases?
-  [3] Effect sizes (ΔR², ΔMAE, ΔsMAPE) at each gap — reported without per-gap DM
-      tests to avoid multiple comparison inflation
+  [3] Effect sizes (ΔR², ΔMAE, ΔsMAPE) at each gap, with month-clustered
+      paired tests reported for transparency
 
 Outputs
 -------
@@ -55,6 +55,7 @@ from xgboost import XGBRegressor
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pipeline import config
+from experiments.stat_tests import paired_panel_tests
 from experiments.tune_deployable_model import merge_laus, DEPLOYABLE_FEATURES
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
@@ -96,24 +97,6 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     r2     = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
     mae    = float(np.abs(y_true - y_pred).mean())
     return dict(r2=round(r2, 4), mae=round(mae, 6), smape=round(_smape(y_true, y_pred), 2))
-
-
-def diebold_mariano(e1: np.ndarray, e2: np.ndarray) -> dict:
-    """DM test (HLN corrected). d = e1²-e2². Negative z = model 1 better."""
-    d      = e1 ** 2 - e2 ** 2
-    n      = len(d)
-    d_bar  = d.mean()
-    gamma0 = np.var(d, ddof=1)
-    gamma1 = np.cov(d[:-1], d[1:])[0, 1] if n > 2 else 0.0
-    var_d  = (gamma0 + 2 * gamma1) / n
-    if var_d <= 0:
-        return dict(dm_stat=0.0, p_value=1.0, significant=False)
-    dm     = d_bar / np.sqrt(var_d)
-    corr   = np.sqrt((n + 1 - 2 + 1 * 0 / n) / n)
-    dm_adj = dm * corr
-    p      = float(2 * (1 - stats.t.cdf(abs(dm_adj), df=n - 1)))
-    return dict(dm_stat=round(float(dm_adj), 4), p_value=round(p, 4),
-                significant=bool(p < 0.05))
 
 
 # ── Walk-forward with gap ──────────────────────────────────────────────────────
@@ -217,10 +200,16 @@ def main():
         m_no = _metrics(y, p_no)
         m_wt = _metrics(y, p_wt)
 
-        e_no = y - p_no
-        e_wt = y - p_wt
-        dm   = diebold_mariano(e_no, e_wt)
-        wilcox = stats.wilcoxon(np.abs(e_no), np.abs(e_wt))
+        paired_tests = paired_panel_tests(
+            noncovid,
+            actual_col=TARGET,
+            model_a_pred_col="pred_no",
+            model_b_pred_col="pred_with",
+            model_a_label="No Trends",
+            model_b_label="With Trends",
+        )
+        dm = paired_tests["diebold_mariano"]
+        wilcox = paired_tests["wilcoxon"]
 
         row = dict(
             gap=gap,
@@ -231,15 +220,17 @@ def main():
             delta_mae=round(m_wt["mae"]   - m_no["mae"],   6),
             no_smape=m_no["smape"],with_smape=m_wt["smape"],
             delta_smape=round(m_wt["smape"]- m_no["smape"], 2),
-            dm_stat=dm["dm_stat"], dm_p=dm["p_value"], dm_sig=dm["significant"],
-            wilcox_p=round(float(wilcox.pvalue), 4),
-            wilcox_sig=bool(wilcox.pvalue < 0.05),
+            dm_stat=dm["dm_stat"], dm_p=dm["p_value"], dm_sig=dm["significant_at_05"],
+            dm_n_months=dm["n_forecast_origins"],
+            wilcox_p=wilcox["p_value_two_sided"],
+            wilcox_p_model_b_better=wilcox["p_value_model_b_better"],
+            wilcox_sig=wilcox["significant_at_05_two_sided"],
         )
         results.append(row)
         log.info(
             f"  Gap {gap:2d}: no-Trends R²={m_no['r2']:.4f}  "
             f"with-Trends R²={m_wt['r2']:.4f}  ΔR²={m_wt['r2']-m_no['r2']:+.4f}  "
-            f"DM p={dm['p_value']:.4f}{'✓' if dm['significant'] else ''}"
+            f"DM p={dm['p_value']:.4f}{'✓' if dm['significant_at_05'] else ''}"
         )
 
     # ── Monotonicity ──────────────────────────────────────────────────────────
@@ -277,26 +268,25 @@ def main():
     print(f"{sep}\n")
 
     sig_s = "✓" if spear.pvalue < 0.05 else "✗"
-    print(f"  [1] Monotonicity: does Trends gain increase with gap?")
+    print(f"  [1] Monotonicity: how does Trends gain change with training gap?")
     print(f"  Spearman ρ(gap, ΔR²) = {spear.statistic:+.4f}  p = {spear.pvalue:.4f}  {sig_s}")
     if spear.statistic < -0.5 and spear.pvalue < 0.05:
-        print(f"  → Trends benefit decreases monotonically with gap (expected: stale model")
-        print(f"     + real-time Trends = diminishing returns as staleness grows).")
-        print(f"  → Gain remains POSITIVE and SIGNIFICANT through gap ≈ 8 months.")
+        print(f"  → Trends benefit decreases monotonically with gap.")
     elif spear.statistic > 0 and spear.pvalue < 0.05:
         print(f"  → Trends becomes more valuable as gap grows.")
     else:
         print(f"  → No strong monotonic pattern detected.")
 
     gap0 = next(r for r in results if r["gap"] == 0)
-    print(f"\n  [2] Gap=0 benchmark (standard walk-forward, DM test):")
+    print(f"\n  [2] Gap=0 benchmark (standard walk-forward, month-clustered DM test):")
     print(f"  ΔR²={gap0['delta_r2']:+.4f}  DM stat={gap0['dm_stat']:+.4f}  "
           f"p={gap0['dm_p']:.4f}  {'✓ significant' if gap0['dm_sig'] else '✗ not significant'}")
-    print(f"  Wilcoxon p={gap0['wilcox_p']:.4f}  "
+    print(f"  Wilcoxon two-sided p={gap0['wilcox_p']:.4f}  "
           f"{'✓ significant' if gap0['wilcox_sig'] else '✗ not significant'}")
+    print(f"  Wilcoxon one-sided p (With-Trends better)={gap0['wilcox_p_model_b_better']:.4f}")
 
     n_sig = sum(1 for r in results if r["dm_sig"])
-    print(f"\n  [3] DM significant at {n_sig}/{len(results)} gap settings")
+    print(f"\n  [3] Month-clustered DM significant at {n_sig}/{len(results)} gap settings")
 
     avg_gain = np.mean(delta_r2s)
     print(f"\n  Avg ΔR² across gaps 0–12: {avg_gain:+.4f}")
@@ -314,6 +304,8 @@ def main():
     with open(OUT_JSON, "w") as f:
         json.dump(dict(
             description="Lag robustness: walk-forward with 0–12 month training gap, no SNAP features",
+            statistical_test_unit="forecast month; county losses averaged within month",
+            dm_sign_convention="positive means With-Trends has lower squared error than No-Trends",
             n_base_features=len(BASE_FEATURES),
             n_trends_features=len(TRENDS_FEATURES),
             base_features=BASE_FEATURES,

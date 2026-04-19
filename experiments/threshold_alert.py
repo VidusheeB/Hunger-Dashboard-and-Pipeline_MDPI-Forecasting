@@ -129,10 +129,13 @@ def main():
     opt_J_pct  = int(sweep_df.loc[sweep_df["youden_J"].idxmax(), "percentile"])
     opt_F1_pct = int(sweep_df.loc[sweep_df["f1"].idxmax(),       "percentile"])
 
-    # ── Final thresholds (applied to full dataset) ────────────────────────────
+    # ── Deployment thresholds (refit on full historical data) ─────────────────
     # Select Red threshold by F1-optimal (Lipton et al., 2014): maximizes F1
     # on held-out test data, balancing missed events vs. false alarms.
     # Yellow is set 10 percentile points below Red to create a distinct warning band.
+    # After the percentile is selected on the temporal holdout, deployment
+    # thresholds are refit on all historical data available at run time.  The
+    # held-out confusion matrix below still uses df_train thresholds only.
     opt_red_pct    = opt_F1_pct
     opt_yellow_pct = opt_red_pct - 10
 
@@ -166,9 +169,9 @@ def main():
     # ── Print ─────────────────────────────────────────────────────────────────
     sep = "═" * 72
     print(f"\n{sep}")
-    print(f"  THRESHOLD ALERT — ROC-optimal Green / Yellow / Red labels")
-    print(f"  Threshold optimization: county-specific percentile chosen via")
-    print(f"  held-out test set (non-circular — training counties → test evaluation)")
+    print(f"  THRESHOLD ALERT — F1-optimal Green / Yellow / Red labels")
+    print(f"  Threshold optimization: county-specific percentile selected on")
+    print(f"  held-out test months; test metrics use thresholds estimated from train months")
     print(f"{sep}\n")
 
     print(f"  Temporal split : {len(train_dates)} train months / {len(test_dates)} test months")
@@ -198,7 +201,7 @@ def main():
               f"{int(r['fn']):>5}  {int(r['tn']):>5}{m}")
 
     print(f"\n  {'─'*68}")
-    print(f"  CONFUSION MATRIX @ J-optimal ({opt_red_pct}th pctile Red threshold)")
+    print(f"  CONFUSION MATRIX @ F1-optimal ({opt_red_pct}th pctile Red threshold)")
     print(f"  Ground truth = deviation > {TRUE_EVENT_PCT}th pctile, county thresholds from train")
     print(f"  {'─'*68}")
     fc = final_cm
@@ -213,7 +216,7 @@ def main():
     print(f"  Youden's J           : {fc['youden_J']:.3f}")
 
     print(f"\n  {'─'*68}")
-    print(f"  FULL-DATA LABEL COUNTS (optimal Red={opt_red_pct}th, Yellow={opt_yellow_pct}th pctile)")
+    print(f"  FULL-HISTORY DEPLOYMENT LABEL COUNTS (Red={opt_red_pct}th, Yellow={opt_yellow_pct}th pctile)")
     print(f"  {'─'*68}")
     for lbl in ["Green", "Yellow", "Red"]:
         c = counts.get(lbl, 0)
@@ -222,7 +225,9 @@ def main():
 
     # ── Save JSON ─────────────────────────────────────────────────────────────
     summary = {
-        "threshold_method": "ROC J-optimal per-county percentile (training→test holdout)",
+        "threshold_method": "F1-optimal per-county percentile selected on temporal holdout",
+        "evaluation_protocol": "candidate percentiles selected on test months; confusion matrix uses county thresholds estimated from train months only",
+        "deployment_threshold_refit": "after selecting percentile, county thresholds are refit on all historical data for dashboard/future use",
         "train_months": len(train_dates),
         "test_months": len(test_dates),
         "true_event_percentile": TRUE_EVENT_PCT,

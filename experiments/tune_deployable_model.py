@@ -4,15 +4,14 @@ tune_deployable_model.py — Hyperparameter tuning for the deployment-realistic 
 Deployment context
 ------------------
 In production, SNAP administrative data has a reporting lag of approximately
-6 months. This means that at prediction time, rate_lag1 reflects the rate from
-~7 months ago (not 1 month ago), rate_lag2 from ~8 months ago, etc. — far
-outside the range at which these features were calibrated. Using stale SNAP lags
-in a model tuned on fresh lags would produce silently incorrect predictions.
+6 months. Features derived from recent official SNAP outcomes are therefore not
+available at prediction time and are excluded from the model.
 
 The deployable model therefore uses only features that are genuinely available
 at prediction time:
-  - Google Trends (near-real-time, ~2-day lag)
+  - Google Trends through t-1 (near-real-time, ~2-day lag)
   - Demographics (annual Census/ACS estimates)
+  - BLS LAUS unemployment through t-1
   - Seasonality (deterministic)
 
 SNAP lag and rolling features are excluded entirely.
@@ -47,7 +46,7 @@ Outputs
   outputs/metrics/deployable_walkforward_predictions.csv
   outputs/metrics/deployable_tuning_results.json
   outputs/metrics/deployable_threshold_calibration.json
-  Console: full comparison table vs full production model
+  Console: deployable walk-forward metrics
 
 Usage
 -----
@@ -89,14 +88,12 @@ DEPLOYABLE_FEATURES = [
     "foodstamps_roll3", "snaptopic_roll3",
     "calfresh_momentum", "foodbank_momentum",
     "foodstamps_momentum", "snaptopic_momentum",
-    # Unemployment (BLS LAUS, ~1-month lag — available well before SNAP admin data)
+    # Unemployment (BLS LAUS, publication-safe: t-1 and t-2 for target month t)
     "unemployment_rate", "unemployment_rate_lag1",
     # Seasonality (deterministic)
     "month_sin", "month_cos", "quarter", "month",
     # Log transforms of demographics
     "log_population", "log_income",
-    # EXCLUDED: rate_lag1, rate_lag2, rate_lag3, rate_roll3_mean, rate_roll3_std
-    #   (require recent SNAP data unavailable in the 6-month lag scenario)
 ]
 
 # Path to BLS LAUS county unemployment data
@@ -107,16 +104,6 @@ LAUS_CSV = os.path.join(
 
 TARGET = "SNAP_Application_Rate"
 WALK_FORWARD_MIN_MONTHS = config.WALK_FORWARD_MIN_MONTHS   # matches pipeline (12)
-
-# Full model metrics for comparison (from last pipeline run)
-FULL_MODEL = {
-    "label":   "Full XGBoost (23 features, SNAP lags included)",
-    "r2":      0.6788,
-    "mae":     0.000791,
-    "smape":   14.42,
-    "roc_auc": 0.6467,
-    "pr_auc":  0.1881,
-}
 
 # Tuning fraction: use first TUNE_FRAC of unique dates for hyperparameter search
 # COVID period handling:
@@ -140,21 +127,28 @@ CALIB_JSON  = os.path.join(OUT_METRICS, "deployable_threshold_calibration.json")
 
 def merge_laus(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Merge BLS LAUS county unemployment rate into df and compute a 1-month lag.
+    Merge BLS LAUS county unemployment with publication-safe lags.
 
-    unemployment_rate      — current month unemp rate (BLS LAUS, ~1-month lag)
-    unemployment_rate_lag1 — prior month unemp rate
+    For target SNAP month t:
+      unemployment_rate      — LAUS unemployment at t-1
+      unemployment_rate_lag1 — LAUS unemployment at t-2
     """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.to_period("M").dt.to_timestamp()
+    if {"unemployment_rate", "unemployment_rate_lag1"}.issubset(df.columns):
+        return df
+
     laus = pd.read_csv(LAUS_CSV, parse_dates=["date"])
     laus = laus[["county", "date", "unemployment_rate"]].copy()
     laus["date"] = laus["date"].dt.to_period("M").dt.to_timestamp()
 
-    # Compute lag within LAUS before merging so the lag is county-specific
+    # Compute lags within LAUS before merging so they are county-specific and
+    # never use unemployment from the target SNAP month.
     laus = laus.sort_values(["county", "date"])
-    laus["unemployment_rate_lag1"] = laus.groupby("county")["unemployment_rate"].shift(1)
+    laus["unemployment_rate_lag1"] = laus.groupby("county")["unemployment_rate"].shift(2)
+    laus["unemployment_rate"] = laus.groupby("county")["unemployment_rate"].shift(1)
 
-    df = df.copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.to_period("M").dt.to_timestamp()
+    df = df.drop(columns=["unemployment_rate", "unemployment_rate_lag1"], errors="ignore")
     df = df.merge(laus, on=["county", "date"], how="left")
 
     missing_ur = df["unemployment_rate"].isna().sum()
@@ -388,8 +382,7 @@ def run():
 
     logger.info(
         f"Deployable feature set ({len(DEPLOYABLE_FEATURES)} features): "
-        f"Trends + unemployment + demographics + seasonality. "
-        f"EXCLUDED: rate_lag1/2/3, rate_roll3_mean/std"
+        f"Trends + unemployment + demographics + seasonality."
     )
 
     # ── Tune ─────────────────────────────────────────────────────────────────
@@ -434,14 +427,11 @@ def run():
     print(f"\n  {'─'*68}")
     print(f"  WALK-FORWARD ACCURACY  ({len(wf_df):,} county-months)")
     print(f"  {'─'*68}")
-    print(f"  {'Metric':<25}  {'Deployable (tuned)':>18}  {'Full XGBoost':>14}  {'Δ':>8}")
-    print(f"  {'-'*68}")
-    print(f"  {'R²':<25}  {r2_val:>18.4f}  {FULL_MODEL['r2']:>14.4f}  "
-          f"{r2_val - FULL_MODEL['r2']:>+8.4f}")
-    print(f"  {'MAE':<25}  {mae_val:>18.6f}  {FULL_MODEL['mae']:>14.6f}  "
-          f"{mae_val - FULL_MODEL['mae']:>+8.6f}")
-    print(f"  {'sMAPE (%)':<25}  {smape_val:>18.2f}  {FULL_MODEL['smape']:>14.2f}  "
-          f"{smape_val - FULL_MODEL['smape']:>+8.2f}")
+    print(f"  {'Metric':<25}  {'Deployable (tuned)':>18}")
+    print(f"  {'-'*46}")
+    print(f"  {'R²':<25}  {r2_val:>18.4f}")
+    print(f"  {'MAE':<25}  {mae_val:>18.6f}")
+    print(f"  {'sMAPE (%)':<25}  {smape_val:>18.2f}")
 
     print(f"\n{'═'*72}\n")
 
@@ -450,7 +440,7 @@ def run():
         "model":              "XGBoost — deployable (no SNAP lags, tuned)",
         "features":           DEPLOYABLE_FEATURES,
         "n_features":         len(DEPLOYABLE_FEATURES),
-        "excluded_features":  ["rate_lag1","rate_lag2","rate_lag3","rate_roll3_mean","rate_roll3_std"],
+        "snap_outcome_features": "excluded",
         "covid_handling":     "excluded from regression metrics; included in walk-forward",
         "covid_exclusion_window": f"{COVID_START} – {COVID_END}",
         "tune_fraction":      TUNE_FRAC,
@@ -461,7 +451,6 @@ def run():
             "mae":   round(mae_val, 6),
             "smape": round(smape_val, 2),
         },
-        "full_model_comparison": FULL_MODEL,
     }
     with open(CALIB_JSON, "w") as f:
         json.dump(summary, f, indent=2)

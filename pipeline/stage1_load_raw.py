@@ -329,7 +329,7 @@ def load_income() -> pd.DataFrame:
 
 def load_prediction_trends(keyword: str) -> pd.DataFrame:
     """
-    Load current-month Google Trends CSVs from the prediction folder.
+    Load forward-period Google Trends CSVs from the prediction folder.
 
     These are in the Google Trends export format (quoted header row).
     Handles both old format ('Category: All categories' row 0) and new
