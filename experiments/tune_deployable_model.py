@@ -47,7 +47,6 @@ Outputs
   outputs/metrics/deployable_walkforward_predictions.csv
   outputs/metrics/deployable_tuning_results.json
   outputs/metrics/deployable_threshold_calibration.json
-  outputs/figures/deployable_roc_pr.png
   Console: full comparison table vs full production model
 
 Usage
@@ -68,10 +67,9 @@ import warnings
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import roc_curve, precision_recall_curve, auc, r2_score
+from sklearn.metrics import r2_score
 
 from pipeline import config
-from pipeline.alert_layer import compute_warning_signals, _rolling_stats
 
 warnings.filterwarnings("ignore", category=UserWarning)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
@@ -133,16 +131,11 @@ COVID_END   = "2021-12-31"
 
 TUNE_FRAC = 0.78  # pushes hold-out into post-2023 flat regime (post emergency allotments)
 
-TARGET_PRECISION_RED  = 0.35
-MIN_RECALL_YELLOW     = 0.50
-
 # Output paths
 OUT_METRICS = os.path.join(config.OUTPUTS_ROOT, "metrics")
-OUT_FIGURES = config.FIGURES_DIR
 WF_CSV      = os.path.join(OUT_METRICS, "deployable_walkforward_predictions.csv")
 TUNE_JSON   = os.path.join(OUT_METRICS, "deployable_tuning_results.json")
 CALIB_JSON  = os.path.join(OUT_METRICS, "deployable_threshold_calibration.json")
-FIGURE_PNG  = os.path.join(OUT_FIGURES, "deployable_roc_pr.png")
 
 
 # ── LAUS unemployment merge ───────────────────────────────────────────────────
@@ -185,27 +178,6 @@ def _smape(actual, predicted):
         np.abs(actual[mask] - predicted[mask]) /
         ((np.abs(actual[mask]) + np.abs(predicted[mask])) / 2)
     ))
-
-
-def _score_at_threshold(df, threshold):
-    pred   = (df["warning_score"] >= threshold).astype(int)
-    actual = df["is_spike"].astype(int)
-    tp = int(((pred == 1) & (actual == 1)).sum())
-    fp = int(((pred == 1) & (actual == 0)).sum())
-    fn = int(((pred == 0) & (actual == 1)).sum())
-    tn = int(((pred == 0) & (actual == 0)).sum())
-    prec = tp / (tp + fp) if (tp + fp) > 0 else float("nan")
-    rec  = tp / (tp + fn) if (tp + fn) > 0 else float("nan")
-    spec = tn / (tn + fp) if (tn + fp) > 0 else float("nan")
-    f1   = (2*prec*rec/(prec+rec)
-            if not (pd.isna(prec) or pd.isna(rec)) and (prec+rec) > 0
-            else float("nan"))
-    fpr  = fp / (fp + tn) if (fp + tn) > 0 else float("nan")
-    J    = (rec + spec - 1
-            if not (pd.isna(rec) or pd.isna(spec)) else float("nan"))
-    return dict(threshold=round(threshold,4), tp=tp, fp=fp, fn=fn, tn=tn,
-                precision=prec, recall=rec, f1=f1, fpr=fpr,
-                specificity=spec, youden_J=J)
 
 
 # ── Hyperparameter tuning ─────────────────────────────────────────────────────
@@ -391,118 +363,6 @@ def run_walk_forward(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     return pd.DataFrame(prediction_rows)
 
 
-# ── Alert evaluation ──────────────────────────────────────────────────────────
-
-def run_alert_evaluation(df: pd.DataFrame, wf_lookup: dict) -> pd.DataFrame:
-    W, min_obs, spike_k = (
-        config.ALERT_ROLLING_WINDOW_W,
-        config.ALERT_MIN_HISTORY,
-        config.SPIKE_K,
-    )
-    rows = []
-    n_no_pred = 0
-
-    for county in sorted(df["county"].unique()):
-        cdf = df[df["county"] == county].sort_values("date").reset_index(drop=True)
-        for i in range(len(cdf)):
-            row         = cdf.iloc[i]
-            actual_rate = row.get(TARGET, np.nan)
-            if pd.isna(actual_rate):
-                continue
-            hist       = cdf.iloc[:i]
-            hist_rates = hist[TARGET].dropna()
-            if len(hist_rates) < min_obs:
-                continue
-            key            = (county, row["date"].normalize())
-            predicted_rate = wf_lookup.get(key)
-            if predicted_rate is None:
-                n_no_pred += 1
-                continue
-
-            spike_mean, spike_std = _rolling_stats(hist[TARGET], W, min_obs)
-            is_spike = (
-                bool(actual_rate > spike_mean + spike_k * spike_std)
-                if not (pd.isna(spike_mean) or pd.isna(spike_std) or spike_std == 0)
-                else False
-            )
-
-            signals = compute_warning_signals(
-                county               = county,
-                predicted_rate       = predicted_rate,
-                hist_rate_series     = hist[TARGET],
-                scaled_calfresh      = row.get("monthly_average_CalFresh"),
-                scaled_foodbank      = row.get("monthly_average_FoodBank"),
-                calfresh_hist_series = hist["monthly_average_CalFresh"],
-                foodbank_hist_series = hist["monthly_average_FoodBank"],
-            )
-            rows.append({
-                "date":          row["date"].strftime("%Y-%m-%d"),
-                "county":        county,
-                "actual_rate":   round(actual_rate, 7),
-                "predicted_rate":round(predicted_rate, 7),
-                "is_spike":      int(is_spike),
-                "warning_score": signals["warning_score"],
-                "warning_flag":  signals["warning_flag"],
-            })
-
-    if n_no_pred:
-        logger.info(f"  Alert eval: skipped {n_no_pred:,} county-months (no WF prediction)")
-    return pd.DataFrame(rows)
-
-
-# ── ROC / PR calibration ──────────────────────────────────────────────────────
-
-def run_roc_pr(eval_df: pd.DataFrame) -> dict:
-    scored = eval_df[
-        eval_df["warning_score"].notna() & (eval_df["warning_flag"] != "Gray")
-    ].copy()
-    y_true  = scored["is_spike"].values.astype(int)
-    y_score = scored["warning_score"].values
-
-    fpr_arr, tpr_arr, roc_thresh = roc_curve(y_true, y_score)
-    roc_auc = auc(fpr_arr, tpr_arr)
-    prec_arr, rec_arr, pr_thresh = precision_recall_curve(y_true, y_score)
-    pr_auc = auc(rec_arr, prec_arr)
-
-    # Yellow: Youden's J (with recall floor)
-    J = tpr_arr - fpr_arr
-    j_idx = int(np.argmax(J))
-    j_thr, j_tpr, j_fpr = float(roc_thresh[j_idx]), float(tpr_arr[j_idx]), float(fpr_arr[j_idx])
-    yellow_method = "youden_J"
-    if j_tpr < MIN_RECALL_YELLOW:
-        eligible = [(t, tp, fp) for t, tp, fp in zip(roc_thresh, tpr_arr, fpr_arr)
-                    if tp >= MIN_RECALL_YELLOW]
-        if eligible:
-            eligible.sort(key=lambda x: x[2])
-            j_thr, j_tpr, j_fpr = eligible[0]
-        yellow_method = f"recall_floor(≥{MIN_RECALL_YELLOW})"
-
-    # Red: precision floor
-    p, r, t = prec_arr[:-1], rec_arr[:-1], pr_thresh
-    eligible_red = [(th, pr, rc) for th, pr, rc in zip(t, p, r)
-                    if pr >= TARGET_PRECISION_RED]
-    if eligible_red:
-        eligible_red.sort(key=lambda x: x[0])
-        red_thr = eligible_red[0][0]
-        red_method = f"precision_floor(≥{TARGET_PRECISION_RED})"
-    else:
-        red_thr    = float(np.percentile(y_score, 95))
-        red_method = "p95_fallback"
-
-    return dict(
-        n_scored=len(scored), n_spikes=int(y_true.sum()),
-        spike_rate=float(y_true.mean()),
-        roc_auc=round(roc_auc, 4), pr_auc=round(pr_auc, 4),
-        yellow_threshold=round(j_thr, 4), yellow_method=yellow_method,
-        yellow_metrics=_score_at_threshold(scored, j_thr),
-        red_threshold=round(red_thr, 4), red_method=red_method,
-        red_metrics=_score_at_threshold(scored, red_thr),
-        scored_df=scored,
-        fpr_arr=fpr_arr, tpr_arr=tpr_arr,
-        prec_arr=prec_arr, rec_arr=rec_arr,
-    )
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run():
@@ -560,21 +420,11 @@ def run():
     wf_df.to_csv(WF_CSV, index=False)
     logger.info(f"Walk-forward predictions ({len(wf_df):,} rows) → {WF_CSV}")
 
-    # ── Alert evaluation (all rows including COVID) ───────────────────────────
-    wf_lookup = {
-        (row["county"], row["date"].normalize()): row["predicted_rate"]
-        for _, row in wf_df.iterrows()
-    }
-    eval_df = run_alert_evaluation(df, wf_lookup)
-
-    # ── ROC / PR ──────────────────────────────────────────────────────────────
-    roc = run_roc_pr(eval_df)
-
     # ── Print ─────────────────────────────────────────────────────────────────
     print("\n" + "═" * 72)
     print("  DEPLOYABLE MODEL — TUNED XGBOOST (NO SNAP LAGS)")
     print("  Features: Google Trends + BLS unemployment + demographics + seasonality")
-    print(f"  COVID {COVID_START}–{COVID_END}: in walk-forward + alerts; excluded from regression metrics")
+    print(f"  COVID {COVID_START}–{COVID_END}: excluded from regression metrics only")
     print("  Realistic when SNAP data has a ≥6-month reporting lag")
     print("═" * 72)
 
@@ -595,66 +445,6 @@ def run():
     print(f"  {'sMAPE (%)':<25}  {smape_val:>18.2f}  {FULL_MODEL['smape']:>14.2f}  "
           f"{smape_val - FULL_MODEL['smape']:>+8.2f}")
 
-    print(f"\n  {'─'*68}")
-    print(f"  ALERT LAYER ROC / PR")
-    print(f"  {'─'*68}")
-    print(f"  {'Metric':<25}  {'Deployable (tuned)':>18}  {'Full XGBoost':>14}  {'Δ':>8}")
-    print(f"  {'-'*68}")
-    print(f"  {'ROC AUC':<25}  {roc['roc_auc']:>18.4f}  "
-          f"{FULL_MODEL['roc_auc']:>14.4f}  "
-          f"{roc['roc_auc'] - FULL_MODEL['roc_auc']:>+8.4f}")
-    print(f"  {'PR AUC':<25}  {roc['pr_auc']:>18.4f}  "
-          f"{FULL_MODEL['pr_auc']:>14.4f}  "
-          f"{roc['pr_auc'] - FULL_MODEL['pr_auc']:>+8.4f}")
-
-    ym = roc["yellow_metrics"]
-    rm = roc["red_metrics"]
-    print(f"\n  {'─'*68}")
-    print(f"  CALIBRATED THRESHOLDS")
-    print(f"  {'─'*68}")
-    print(f"  Yellow  threshold : {roc['yellow_threshold']:.4f}  ({roc['yellow_method']})")
-    print(f"    Recall          : {ym['recall']:.3f}")
-    print(f"    Precision       : {ym['precision']:.3f}")
-    print(f"    FPR             : {ym['fpr']:.3f}")
-    print(f"    Youden's J      : {ym['youden_J']:.3f}")
-    print(f"    TP / FP / FN / TN: {ym['tp']} / {ym['fp']} / {ym['fn']} / {ym['tn']}")
-    print(f"  Red     threshold : {roc['red_threshold']:.4f}  ({roc['red_method']})")
-    print(f"    Recall          : {rm['recall']:.3f}")
-    print(f"    Precision       : {rm['precision']:.3f}")
-    print(f"    FPR             : {rm['fpr']:.3f}")
-    print(f"    TP / FP / FN / TN: {rm['tp']} / {rm['fp']} / {rm['fn']} / {rm['tn']}")
-
-    print(f"\n  {'─'*68}")
-    print(f"  SCORE SWEEP")
-    print(f"  {'─'*68}")
-    print(f"  {'Threshold':>10}  {'Recall':>7}  {'Precision':>9}  {'F1':>6}  "
-          f"{'FPR':>6}  {'Youden_J':>9}  {'TP':>5}  {'FP':>5}  {'FN':>5}")
-    print(f"  {'-'*68}")
-    scored_df = roc["scored_df"]
-    sweep = sorted(set(
-        list(np.arange(0.0, 3.1, 0.2)) +
-        [roc["yellow_threshold"], roc["red_threshold"],
-         config.ALERT_YELLOW_THRESHOLD, config.ALERT_RED_THRESHOLD]
-    ))
-    for thr in sweep:
-        m = _score_at_threshold(scored_df, thr)
-        marker = ""
-        if abs(thr - roc["yellow_threshold"]) < 0.001:
-            marker += " ◄ YELLOW*"
-        if abs(thr - roc["red_threshold"]) < 0.001:
-            marker += " ◄ RED*"
-        if abs(thr - config.ALERT_YELLOW_THRESHOLD) < 0.001 and abs(thr - roc["yellow_threshold"]) > 0.001:
-            marker += " (prod yellow)"
-        if abs(thr - config.ALERT_RED_THRESHOLD) < 0.001 and abs(thr - roc["red_threshold"]) > 0.001:
-            marker += " (prod red)"
-        rec  = f"{m['recall']:.3f}"    if m['recall']    is not None else "  —  "
-        prec = f"{m['precision']:.3f}" if m['precision'] is not None else "  —  "
-        f1v  = f"{m['f1']:.3f}"        if m['f1']        is not None else "  —  "
-        fprv = f"{m['fpr']:.3f}"       if m['fpr']       is not None else "  —  "
-        jv   = f"{m['youden_J']:.3f}"  if m['youden_J']  is not None else "  —  "
-        print(f"  {thr:>10.3f}  {rec:>7}  {prec:>9}  {f1v:>6}  "
-              f"{fprv:>6}  {jv:>9}  {m['tp']:>5}  {m['fp']:>5}  {m['fn']:>5}{marker}")
-
     print(f"\n{'═'*72}\n")
 
     # ── Save JSON ─────────────────────────────────────────────────────────────
@@ -663,8 +453,7 @@ def run():
         "features":           DEPLOYABLE_FEATURES,
         "n_features":         len(DEPLOYABLE_FEATURES),
         "excluded_features":  ["rate_lag1","rate_lag2","rate_lag3","rate_roll3_mean","rate_roll3_std"],
-        "added_features":     ["unemployment_rate","unemployment_rate_lag1"],
-        "covid_handling":     "excluded from regression metrics; included in alert evaluation",
+        "covid_handling":     "excluded from regression metrics; included in walk-forward",
         "covid_exclusion_window": f"{COVID_START} – {COVID_END}",
         "tune_fraction":      TUNE_FRAC,
         "best_params":        {k: v for k, v in best_params.items() if k not in ("n_jobs",)},
@@ -674,75 +463,13 @@ def run():
             "mae":   round(mae_val, 6),
             "smape": round(smape_val, 2),
         },
-        "alert_roc_pr": {
-            "roc_auc":          roc["roc_auc"],
-            "pr_auc":           roc["pr_auc"],
-            "yellow_threshold": roc["yellow_threshold"],
-            "yellow_method":    roc["yellow_method"],
-            "yellow_metrics":   {k: v for k, v in ym.items() if k != "threshold"},
-            "red_threshold":    roc["red_threshold"],
-            "red_method":       roc["red_method"],
-            "red_metrics":      {k: v for k, v in rm.items() if k != "threshold"},
-        },
         "full_model_comparison": FULL_MODEL,
     }
     with open(CALIB_JSON, "w") as f:
         json.dump(summary, f, indent=2)
     with open(TUNE_JSON, "w") as f:
         json.dump({"best_params": best_params}, f, indent=2)
-    logger.info(f"Calibration JSON → {CALIB_JSON}")
-
-    # ── Plot ──────────────────────────────────────────────────────────────────
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        full_roc_csv = os.path.join(OUT_METRICS, "threshold_roc.csv")
-        full_pr_csv  = os.path.join(OUT_METRICS, "threshold_pr.csv")
-
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-
-        ax = axes[0]
-        ax.plot(roc["fpr_arr"], roc["tpr_arr"], lw=2, color="steelblue",
-                label=f"Deployable tuned XGBoost (AUC={roc['roc_auc']:.3f})")
-        if os.path.exists(full_roc_csv):
-            fr = pd.read_csv(full_roc_csv)
-            ax.plot(fr["fpr"], fr["tpr"], lw=2, color="dimgray", ls="--",
-                    label=f"Full XGBoost (AUC={FULL_MODEL['roc_auc']:.3f})")
-        ax.plot([0,1],[0,1],"k:",lw=1,alpha=0.4)
-        ax.scatter([ym["fpr"]], [ym["recall"]], color="orange", zorder=5, s=80,
-                   label=f"Yellow={roc['yellow_threshold']:.3f}")
-        ax.scatter([rm["fpr"]], [rm["recall"]], color="red", zorder=5, s=80,
-                   label=f"Red={roc['red_threshold']:.3f}")
-        ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate (Recall)")
-        ax.set_title("ROC — Deployable (tuned, no SNAP lags) vs Full XGBoost")
-        ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
-
-        ax = axes[1]
-        ax.plot(roc["rec_arr"], roc["prec_arr"], lw=2, color="steelblue",
-                label=f"Deployable tuned (AUC={roc['pr_auc']:.3f})")
-        if os.path.exists(full_pr_csv):
-            fp_df = pd.read_csv(full_pr_csv).dropna()
-            ax.plot(fp_df["recall"], fp_df["precision"], lw=2, color="dimgray", ls="--",
-                    label=f"Full XGBoost (AUC={FULL_MODEL['pr_auc']:.3f})")
-        ax.axhline(roc["spike_rate"], color="gray", lw=1, ls=":",
-                   label=f"Baseline (spike rate={roc['spike_rate']:.3f})")
-        ax.scatter([ym["recall"]], [ym["precision"]], color="orange", zorder=5, s=80,
-                   label=f"Yellow prec={ym['precision']:.3f}")
-        ax.scatter([rm["recall"]], [rm["precision"]], color="red", zorder=5, s=80,
-                   label=f"Red prec={rm['precision']:.3f}")
-        ax.set_xlabel("Recall"); ax.set_ylabel("Precision")
-        ax.set_title("PR — Deployable (tuned, no SNAP lags) vs Full XGBoost")
-        ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        os.makedirs(OUT_FIGURES, exist_ok=True)
-        plt.savefig(FIGURE_PNG, dpi=150, bbox_inches="tight")
-        plt.close()
-        logger.info(f"Figure → {FIGURE_PNG}")
-    except ImportError:
-        logger.info("matplotlib not available — skipping figure.")
+    logger.info(f"Results → {CALIB_JSON}")
 
 
 if __name__ == "__main__":
