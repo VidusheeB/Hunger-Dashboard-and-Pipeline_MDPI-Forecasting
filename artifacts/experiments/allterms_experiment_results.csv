@@ -1,4 +1,0 @@
-Feature_Set,Num_Features,R2,RMSE,MAE,sMAPE,Months_Tested,Total_Predictions
-A) Original 2 terms,5,0.6988,0.001021,0.000727,12.19,18,999
-B) All 8 new terms,11,0.6857,0.001043,0.00074,12.49,18,999
-C) All 8 + original 2,13,0.6904,0.001035,0.000732,12.32,18,999

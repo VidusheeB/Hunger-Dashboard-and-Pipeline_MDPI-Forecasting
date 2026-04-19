@@ -10,51 +10,205 @@ missing rather than crashing silently.
 import os
 import glob
 import logging
+import warnings
 
+import numpy as np
 import pandas as pd
 
 from pipeline import config
 
 logger = logging.getLogger(__name__)
 
+# Minimum overlapping weeks between adjacent year chunks to compute a reliable
+# rescaling ratio.  Fewer than this → ratio defaults to 1.0 (no rescaling).
+_MIN_OVERLAP_WEEKS = 4
+
 
 # ── Trend data ────────────────────────────────────────────────────────────────
 
 def load_trend_csvs(keyword: str) -> pd.DataFrame:
     """
-    Read all per-DMA weekly trend CSVs for one keyword (e.g. 'CalFresh').
+    Load, stitch, and rescale all per-DMA year-chunk Google Trends CSVs for
+    one keyword (e.g. 'CalFresh' or 'FoodBank').
 
-    Each file is named {DMA}.csv and contains two headerless columns:
-        date (YYYY-MM-DD), value (0-100 Google Trends index)
+    Data layout on disk:
+        TRENDS_DIR/{folder_name}/{DMA}/{DMA}{year}.csv
+    where folder_name is looked up from config.TRENDS_FOLDER_MAP.
+
+    Each annual CSV uses the Google Trends export format:
+        "Time","CalFresh"
+        "2017-01-01",50
+        ...
+
+    Because each file is independently normalized 0-100 within its own
+    download window, values across different annual files are not directly
+    comparable.  This function chain-rescales them into a single continuous
+    series anchored to the most recent file, then re-normalizes to 0-100.
+
+    Stitching algorithm (from scripts/stitch_trends.py, generalized):
+      1. Sort all files for a DMA by their earliest date (oldest first).
+      2. Anchor the newest file at scale = 1.0.
+      3. Walk backwards through adjacent pairs (older, newer):
+           overlap_dates = dates present in both files
+           ratio = mean(newer[overlap]) / mean(older[overlap])
+           scale[older] = ratio × scale[newer]
+      4. Multiply every file's values by its cumulative scale factor.
+      5. Merge all files; where dates overlap the newer file's scaled value wins.
+      6. Re-normalize the full series to 0-100.
 
     Returns DataFrame with columns: metro_area, date (datetime), value (float).
-    Rows with unparseable dates or non-numeric values are dropped.
     """
-    pattern = os.path.join(config.TRENDS_DIR, keyword, "*.csv")
-    files = glob.glob(pattern)
-
-    if not files:
-        logger.warning(f"No trend files found for keyword '{keyword}' at {pattern}")
+    folder_name = config.TRENDS_FOLDER_MAP.get(keyword)
+    if not folder_name:
+        logger.warning(f"No folder mapping for keyword '{keyword}' in config.TRENDS_FOLDER_MAP")
         return pd.DataFrame(columns=["metro_area", "date", "value"])
 
-    dfs = []
-    for fpath in files:
-        metro = os.path.splitext(os.path.basename(fpath))[0]
-        df = pd.read_csv(fpath, header=None, names=["date", "value"])
-        df["date"]  = pd.to_datetime(df["date"], errors="coerce")
-        df["value"] = pd.to_numeric(df["value"], errors="coerce")
-        df = df.dropna(subset=["date", "value"])
-        df["metro_area"] = metro
-        dfs.append(df)
+    keyword_dir = os.path.join(config.TRENDS_DIR, folder_name)
+    if not os.path.exists(keyword_dir):
+        logger.warning(f"Trends folder not found: {keyword_dir}")
+        return pd.DataFrame(columns=["metro_area", "date", "value"])
 
-    combined = pd.concat(dfs, ignore_index=True)
+    dma_dirs = sorted([
+        d for d in os.listdir(keyword_dir)
+        if os.path.isdir(os.path.join(keyword_dir, d)) and not d.startswith(".")
+    ])
+
+    if not dma_dirs:
+        logger.warning(f"No DMA sub-directories found under {keyword_dir}")
+        return pd.DataFrame(columns=["metro_area", "date", "value"])
+
+    all_dfs = []
+    for dma in dma_dirs:
+        dma_dir = os.path.join(keyword_dir, dma)
+        stitched = _stitch_dma(dma_dir, dma, keyword)
+        if not stitched.empty:
+            stitched["metro_area"] = dma   # folder name is the metro_area key
+            all_dfs.append(stitched)
+
+    if not all_dfs:
+        logger.warning(f"No usable trend data found for keyword '{keyword}'")
+        return pd.DataFrame(columns=["metro_area", "date", "value"])
+
+    combined = pd.concat(all_dfs, ignore_index=True)
     logger.info(
-        f"  {keyword}: {len(files)} DMA files, "
-        f"{combined['metro_area'].nunique()} DMAs, "
+        f"  {keyword}: {len(dma_dirs)} DMAs, "
         f"{combined['date'].min().date()} – {combined['date'].max().date()}, "
-        f"{len(combined):,} weekly rows"
+        f"{len(combined):,} weekly rows after stitching"
     )
     return combined[["metro_area", "date", "value"]]
+
+
+def _read_annual_csv(path: str) -> pd.DataFrame:
+    """
+    Read one annual Google Trends CSV export.
+
+    Handles quoted and unquoted column names.  The first column is always
+    the date; the second is the Trends index value.
+
+    Returns DataFrame with columns: date (datetime), value (float).
+    Rows with unparseable dates or non-numeric values are dropped.
+    """
+    df = pd.read_csv(path)
+    # Strip quotes from column names (Google Trends sometimes wraps them)
+    df.columns = [c.strip().strip('"') for c in df.columns]
+
+    date_col  = next((c for c in df.columns if c.lower() in ("time", "date")), None)
+    value_col = next((c for c in df.columns if c.lower() not in ("time", "date")), None)
+
+    if date_col is None or value_col is None:
+        return pd.DataFrame(columns=["date", "value"])
+
+    df = df.rename(columns={date_col: "date", value_col: "value"})
+    df["date"]  = pd.to_datetime(
+        df["date"].astype(str).str.strip('"'), errors="coerce"
+    )
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    return (
+        df[["date", "value"]]
+        .dropna(subset=["date", "value"])
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+
+def _stitch_dma(dma_dir: str, dma_name: str, keyword: str) -> pd.DataFrame:
+    """
+    Chain-rescale all annual CSVs for one DMA into a single continuous series.
+
+    Anchors on the most recent file (scale = 1.0) and works backwards,
+    computing a cumulative scale factor for each older file using the ratio
+    of means in the overlapping date window.  Where dates appear in multiple
+    files the newer (scaled) file's value takes precedence.
+
+    Final series is re-normalized to 0-100 to keep values in the same range
+    as the raw Trends indices that the model was designed around.
+
+    Returns DataFrame with columns: date (datetime), value (float 0-100).
+    Returns empty DataFrame if no valid CSVs are found.
+    """
+    csv_files = sorted(glob.glob(os.path.join(dma_dir, "*.csv")))
+    if not csv_files:
+        logger.warning(f"  {dma_name}/{keyword}: no CSV files found")
+        return pd.DataFrame(columns=["date", "value"])
+
+    # Load all files; attach their earliest date for chronological sorting
+    segments = []
+    for path in csv_files:
+        df = _read_annual_csv(path)
+        if not df.empty:
+            segments.append((df["date"].min(), df))
+
+    if not segments:
+        logger.warning(f"  {dma_name}/{keyword}: no readable CSV content")
+        return pd.DataFrame(columns=["date", "value"])
+
+    segments.sort(key=lambda x: x[0])   # oldest first
+
+    n = len(segments)
+    scale_factors = np.ones(n)
+
+    # Walk backwards: compute how each older file relates to the next newer one
+    for i in range(n - 2, -1, -1):
+        _, older_df = segments[i]
+        _, newer_df = segments[i + 1]
+
+        overlap = set(older_df["date"]) & set(newer_df["date"])
+
+        if len(overlap) < _MIN_OVERLAP_WEEKS:
+            warnings.warn(
+                f"{dma_name}/{keyword}: only {len(overlap)} overlapping weeks "
+                f"between segments {i} and {i+1} — using scale=1.0"
+            )
+            scale_factors[i] = scale_factors[i + 1]
+            continue
+
+        old_mean = older_df.set_index("date").loc[list(overlap), "value"].mean()
+        new_mean = newer_df.set_index("date").loc[list(overlap), "value"].mean()
+
+        ratio = (new_mean / old_mean) if old_mean > 0 else 1.0
+        scale_factors[i] = ratio * scale_factors[i + 1]
+
+    # Apply scale factors; merge with newer file winning on duplicate dates
+    combined: dict = {}
+    for i, (_, df) in enumerate(segments):
+        for _, row in df.iterrows():
+            combined[row["date"]] = row["value"] * scale_factors[i]
+
+    result = pd.DataFrame(
+        sorted(combined.items()), columns=["date", "value"]
+    )
+
+    # Re-normalize to 0-100 so values stay interpretable as Trends indices
+    vmax = result["value"].max()
+    if vmax > 0:
+        result["value"] = (result["value"] / vmax * 100).round(2)
+
+    logger.debug(
+        f"  {dma_name}/{keyword}: {n} chunks → "
+        f"{result['date'].min().date()} – {result['date'].max().date()} "
+        f"({len(result)} weeks)"
+    )
+    return result
 
 
 # ── SNAP applications ─────────────────────────────────────────────────────────

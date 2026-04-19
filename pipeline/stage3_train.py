@@ -44,7 +44,11 @@ def prepare_xy(df: pd.DataFrame):
     X = df[available_features]
     y = df[config.TARGET_COL].clip(lower=0)
 
-    mask = X.notna().all(axis=1) & y.notna()
+    # Only require non-NaN for features that have at least some data.
+    # All-NaN columns (e.g. FoodBank when that data isn't loaded yet) are excluded
+    # from the row-drop mask — they'll be passed as NaN and XGBoost handles them.
+    checkable = [c for c in available_features if X[c].notna().any()]
+    mask = X[checkable].notna().all(axis=1) & y.notna()
     X, y = X[mask], y[mask]
 
     logger.info(f"  Training rows: {len(X):,} (dropped {(~mask).sum()} with NaN)")

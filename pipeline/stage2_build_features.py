@@ -73,15 +73,60 @@ def interpolate_snap(df: pd.DataFrame) -> pd.DataFrame:
 
     Monthly SNAP data sometimes has suppressed ('*') values for small counties.
     Interpolation avoids dropping those counties entirely from the model.
+
+    Logs a per-county imputation summary table showing how many rows were
+    filled by each method.
     """
     result = []
+    imputation_log = []  # track filled rows per county
+
     for county, grp in df.groupby("county"):
         grp = grp.sort_values("date").copy()
+        missing_before = grp["SNAP_Applications"].isna().sum()
+
+        # Step 1: linear interpolation (fills interior NaNs only)
         grp["SNAP_Applications"] = grp["SNAP_Applications"].interpolate(method="linear")
+        filled_by_interp = missing_before - grp["SNAP_Applications"].isna().sum()
+
+        # Step 2: county-mean fill (fills leading/trailing NaNs not reached by interpolation)
         county_mean = grp["SNAP_Applications"].mean()
         grp["SNAP_Applications"] = grp["SNAP_Applications"].fillna(county_mean)
+        filled_by_mean = missing_before - filled_by_interp - grp["SNAP_Applications"].isna().sum()
+
+        if missing_before > 0:
+            imputation_log.append({
+                "county":            county,
+                "missing_before":    int(missing_before),
+                "filled_by_interp":  int(filled_by_interp),
+                "filled_by_mean":    int(filled_by_mean),
+            })
+
         result.append(grp)
-    return pd.concat(result, ignore_index=True)
+
+    out = pd.concat(result, ignore_index=True)
+
+    # Print imputation summary
+    if imputation_log:
+        imp_df = pd.DataFrame(imputation_log).sort_values("missing_before", ascending=False)
+        total_interp = imp_df["filled_by_interp"].sum()
+        total_mean   = imp_df["filled_by_mean"].sum()
+        logger.info(
+            f"\n  Imputation summary: {total_interp} rows filled by linear interpolation, "
+            f"{total_mean} by county-mean fill across {len(imp_df)} counties"
+        )
+        logger.info(
+            f"  {'County':<30}  {'Missing':>7}  {'Interpolated':>12}  {'Mean-fill':>9}"
+        )
+        logger.info(f"  {'-'*62}")
+        for _, row in imp_df.iterrows():
+            logger.info(
+                f"  {row['county']:<30}  {int(row['missing_before']):>7d}  "
+                f"{int(row['filled_by_interp']):>12d}  {int(row['filled_by_mean']):>9d}"
+            )
+    else:
+        logger.info("  Imputation: no missing SNAP_Applications values found")
+
+    return out
 
 
 # ── Step 3: Remove outlier SNAP rows ─────────────────────────────────────────

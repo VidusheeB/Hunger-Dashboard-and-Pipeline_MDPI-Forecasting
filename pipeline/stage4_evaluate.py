@@ -68,13 +68,17 @@ def run_walk_forward(df: pd.DataFrame, feature_cols: list) -> tuple:
     test month and evaluates on the test month. The model is retrained from
     scratch each time — no information from the test period leaks into training.
 
-    Returns: (overall_metrics_dict, per_month_DataFrame)
+    Returns: (overall_metrics_dict, per_month_DataFrame, predictions_DataFrame)
+      predictions_DataFrame has columns: county, date, predicted_rate, actual_rate
+      This is consumed by evaluate_alerts.py and calibrate_alpha.py so those
+      scripts use real out-of-sample model predictions rather than actual rates.
     """
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
     dates = sorted(df["date"].unique())
 
     per_month_rows = []
+    prediction_rows = []          # NEW: per-county-month predictions
     all_true, all_pred = [], []
 
     n_skipped = 0
@@ -87,9 +91,10 @@ def run_walk_forward(df: pd.DataFrame, feature_cols: list) -> tuple:
         X_te = df.loc[test_mask,  feature_cols]
         y_te = df.loc[test_mask,  config.TARGET_COL]
 
-        # Drop NaN rows within each window
-        tr_ok = X_tr.notna().all(axis=1) & y_tr.notna()
-        te_ok = X_te.notna().all(axis=1) & y_te.notna()
+        # Drop NaN rows within each window; skip all-NaN columns (e.g. FoodBank absent)
+        checkable = [c for c in feature_cols if X_tr[c].notna().any() or X_te[c].notna().any()]
+        tr_ok = X_tr[checkable].notna().all(axis=1) & y_tr.notna()
+        te_ok = X_te[checkable].notna().all(axis=1) & y_te.notna()
 
         if tr_ok.sum() < 10 or te_ok.sum() == 0:
             n_skipped += 1
@@ -108,6 +113,16 @@ def run_walk_forward(df: pd.DataFrame, feature_cols: list) -> tuple:
             **month_metrics,
         })
 
+        # NEW: record per-county-month predictions with county identity
+        te_counties = df.loc[y_te[te_ok].index, "county"].values
+        for county, pred, actual in zip(te_counties, preds, actuals):
+            prediction_rows.append({
+                "county":         county,
+                "date":           pd.Timestamp(test_date).strftime("%Y-%m-%d"),
+                "predicted_rate": float(pred),
+                "actual_rate":    float(actual),
+            })
+
         all_true.extend(actuals)
         all_pred.extend(preds)
 
@@ -116,7 +131,7 @@ def run_walk_forward(df: pd.DataFrame, feature_cols: list) -> tuple:
 
     if not all_true:
         logger.error("  No walk-forward predictions generated — check data coverage")
-        return {}, pd.DataFrame()
+        return {}, pd.DataFrame(), pd.DataFrame()
 
     overall = calc_metrics(np.array(all_true), np.array(all_pred))
     overall["months_tested"]      = len(per_month_rows)
@@ -137,7 +152,8 @@ def run_walk_forward(df: pd.DataFrame, feature_cols: list) -> tuple:
     logger.info(f"    MAE:   {overall['mae']:.6f}")
     logger.info(f"    sMAPE: {overall['smape']:.2f}%")
 
-    return overall, per_month_df
+    predictions_df = pd.DataFrame(prediction_rows)
+    return overall, per_month_df, predictions_df
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -157,12 +173,14 @@ def evaluate() -> dict:
     if missing:
         logger.warning(f"  Missing features: {missing}")
 
-    # Drop rows missing any feature or target before validation
-    mask = df[feature_cols].notna().all(axis=1) & df[config.TARGET_COL].notna()
+    # Drop rows missing any feature or target before validation;
+    # exclude all-NaN columns (e.g. FoodBank when that data isn't loaded yet)
+    checkable = [c for c in feature_cols if df[c].notna().any()]
+    mask = df[checkable].notna().all(axis=1) & df[config.TARGET_COL].notna()
     df_clean = df[mask].copy()
     logger.info(f"  Rows after NaN drop: {len(df_clean):,} (dropped {(~mask).sum()})")
 
-    overall, per_month_df = run_walk_forward(df_clean, feature_cols)
+    overall, per_month_df, predictions_df = run_walk_forward(df_clean, feature_cols)
 
     if not overall:
         return {}
@@ -175,5 +193,13 @@ def evaluate() -> dict:
     # Save per-month table
     per_month_df.to_csv(config.WF_PER_MONTH_CSV, index=False)
     logger.info(f"  Per-month metrics → {config.WF_PER_MONTH_CSV}")
+
+    # Save per-county-month predictions (county, date, predicted_rate, actual_rate).
+    # Used by evaluate_alerts.py and calibrate_alpha.py for back-test substitution.
+    predictions_df.to_csv(config.WF_PREDICTIONS_CSV, index=False)
+    logger.info(
+        f"  Per-county-month predictions ({len(predictions_df):,} rows) "
+        f"→ {config.WF_PREDICTIONS_CSV}"
+    )
 
     return overall

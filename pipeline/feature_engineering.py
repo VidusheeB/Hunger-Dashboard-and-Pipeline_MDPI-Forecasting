@@ -44,6 +44,8 @@ ENGINEERED_FEATURE_COLS = [
     "Median_Income",
     "monthly_average_CalFresh",
     "monthly_average_FoodBank",
+    "monthly_average_FoodStamps",
+    "monthly_average_SNAPTopic",
     "month",
     # Lags — SNAP rate
     "rate_lag1",
@@ -54,14 +56,22 @@ ENGINEERED_FEATURE_COLS = [
     "calfresh_lag2",
     "foodbank_lag1",
     "foodbank_lag2",
+    "foodstamps_lag1",
+    "foodstamps_lag2",
+    "snaptopic_lag1",
+    "snaptopic_lag2",
     # Rolling windows
     "rate_roll3_mean",
     "rate_roll3_std",
     "calfresh_roll3",
     "foodbank_roll3",
+    "foodstamps_roll3",
+    "snaptopic_roll3",
     # Momentum (trend direction)
     "calfresh_momentum",
     "foodbank_momentum",
+    "foodstamps_momentum",
+    "snaptopic_momentum",
     # Seasonality
     "month_sin",
     "month_cos",
@@ -103,6 +113,10 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.sort_values(["county", "date"]).copy()
 
+    for col in ["monthly_average_FoodBank", "monthly_average_FoodStamps", "monthly_average_SNAPTopic"]:
+        if col not in df.columns:
+            df[col] = float("nan")
+
     for lag in [1, 2, 3]:
         df[f"rate_lag{lag}"] = (
             df.groupby("county")[config.TARGET_COL]
@@ -110,14 +124,13 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     for lag in [1, 2]:
-        df[f"calfresh_lag{lag}"] = (
-            df.groupby("county")["monthly_average_CalFresh"]
-            .shift(lag)
-        )
-        df[f"foodbank_lag{lag}"] = (
-            df.groupby("county")["monthly_average_FoodBank"]
-            .shift(lag)
-        )
+        for kw, col in [
+            ("calfresh",   "monthly_average_CalFresh"),
+            ("foodbank",   "monthly_average_FoodBank"),
+            ("foodstamps", "monthly_average_FoodStamps"),
+            ("snaptopic",  "monthly_average_SNAPTopic"),
+        ]:
+            df[f"{kw}_lag{lag}"] = df.groupby("county")[col].shift(lag)
 
     return df
 
@@ -147,10 +160,12 @@ def add_rolling_features(df: pd.DataFrame, window: int = 3) -> pd.DataFrame:
     df = df.sort_values(["county", "date"]).copy()
 
     def rolling_mean(series, w):
-        return series.rolling(window=w, min_periods=2).mean()
+        # shift(1) ensures the window uses only past values (T-1, T-2, T-3),
+        # never the current row — which is the target variable for rate features.
+        return series.shift(1).rolling(window=w, min_periods=2).mean()
 
     def rolling_std(series, w):
-        return series.rolling(window=w, min_periods=2).std()
+        return series.shift(1).rolling(window=w, min_periods=2).std()
 
     df[f"rate_roll{window}_mean"] = (
         df.groupby("county")[config.TARGET_COL]
@@ -160,14 +175,16 @@ def add_rolling_features(df: pd.DataFrame, window: int = 3) -> pd.DataFrame:
         df.groupby("county")[config.TARGET_COL]
         .transform(lambda s: rolling_std(s, window))
     )
-    df[f"calfresh_roll{window}"] = (
-        df.groupby("county")["monthly_average_CalFresh"]
-        .transform(lambda s: rolling_mean(s, window))
-    )
-    df[f"foodbank_roll{window}"] = (
-        df.groupby("county")["monthly_average_FoodBank"]
-        .transform(lambda s: rolling_mean(s, window))
-    )
+    for kw, col in [
+        ("calfresh",   "monthly_average_CalFresh"),
+        ("foodbank",   "monthly_average_FoodBank"),
+        ("foodstamps", "monthly_average_FoodStamps"),
+        ("snaptopic",  "monthly_average_SNAPTopic"),
+    ]:
+        df[f"{kw}_roll{window}"] = (
+            df.groupby("county")[col]
+            .transform(lambda s: rolling_mean(s, window))
+        )
 
     return df
 
@@ -194,8 +211,14 @@ def add_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     if "calfresh_lag1" not in df.columns:
         raise ValueError("add_lag_features() must be called before add_momentum_features()")
 
-    df["calfresh_momentum"] = df["monthly_average_CalFresh"] - df["calfresh_lag1"]
-    df["foodbank_momentum"]  = df["monthly_average_FoodBank"]  - df["foodbank_lag1"]
+    for kw, col in [
+        ("calfresh",   "monthly_average_CalFresh"),
+        ("foodbank",   "monthly_average_FoodBank"),
+        ("foodstamps", "monthly_average_FoodStamps"),
+        ("snaptopic",  "monthly_average_SNAPTopic"),
+    ]:
+        df[f"{kw}_momentum"] = df[col] - df[f"{kw}_lag1"]
+
     return df
 
 
@@ -422,9 +445,14 @@ def engineer_features(
         for col, n in sorted(missing_by_feature.items(), key=lambda x: -x[1]):
             logger.info(f"    {col}: {n} ({100*n/len(df):.1f}%)")
 
-    # Drop rows that are missing any modelling feature
+    # Drop rows that are missing any modelling feature.
+    # Exclude columns that are entirely NaN (e.g. FoodBank when that data isn't loaded yet)
+    # — those will be NaN in every row so they cannot usefully drive row-dropping.
     if drop_nan_rows:
-        available = [c for c in ENGINEERED_FEATURE_COLS if c in df.columns]
+        available = [
+            c for c in ENGINEERED_FEATURE_COLS
+            if c in df.columns and df[c].notna().any()
+        ]
         before = len(df)
         df = df.dropna(subset=available + [config.TARGET_COL]).reset_index(drop=True)
         logger.info(f"  Dropped {before - len(df)} rows with NaN in modelling features")
