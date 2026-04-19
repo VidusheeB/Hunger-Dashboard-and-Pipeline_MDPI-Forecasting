@@ -130,9 +130,11 @@ def main():
     opt_F1_pct = int(sweep_df.loc[sweep_df["f1"].idxmax(),       "percentile"])
 
     # ── Final thresholds (applied to full dataset) ────────────────────────────
-    # Use Youden's J optimal percentile as Red; 10 points lower as Yellow
-    opt_red_pct    = opt_J_pct
-    opt_yellow_pct = max(50, opt_red_pct - 10)
+    # Select Red threshold by F1-optimal (Lipton et al., 2014): maximizes F1
+    # on held-out test data, balancing missed events vs. false alarms.
+    # Yellow is set 10 percentile points below Red to create a distinct warning band.
+    opt_red_pct    = opt_F1_pct
+    opt_yellow_pct = opt_red_pct - 10
 
     red_thresholds    = _county_thresholds(df, opt_red_pct)
     yellow_thresholds = _county_thresholds(df, opt_yellow_pct)

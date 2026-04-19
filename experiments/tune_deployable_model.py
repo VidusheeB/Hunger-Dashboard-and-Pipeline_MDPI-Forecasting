@@ -80,9 +80,7 @@ logger = logging.getLogger(__name__)
 DEPLOYABLE_FEATURES = [
     # Demographics (annual estimates, always available)
     "Population", "Median_Income",
-    # Google Trends (near-real-time)
-    "monthly_average_CalFresh", "monthly_average_FoodBank",
-    "monthly_average_FoodStamps", "monthly_average_SNAPTopic",
+    # Google Trends — lag1/lag2 only (same-month Trends not available at prediction time)
     "calfresh_lag1", "calfresh_lag2",
     "foodbank_lag1", "foodbank_lag2",
     "foodstamps_lag1", "foodstamps_lag2",

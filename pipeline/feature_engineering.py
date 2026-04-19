@@ -8,11 +8,11 @@ replacement for training_data.csv in stages 3 and 4.
 Feature groups created:
   A. Lag features    — rate_lag{1,2,3}, calfresh_lag{1,2}, foodbank_lag{1,2}
   B. Rolling windows — rate_roll3_{mean,std}, calfresh_roll3, foodbank_roll3
-  C. Momentum        — calfresh_momentum, foodbank_momentum (current − lag1)
+  C. Momentum        — calfresh_momentum, foodbank_momentum (lag1 − lag2; no same-month)
   D. Seasonality     — month_sin, month_cos, quarter (cyclical month encoding)
   E. Population      — log_population (log10 spans 4 orders of magnitude)
   F. Income          — log_income, income_quintile (1–5 label per California quintile)
-  G. Base features   — Population, Median_Income, monthly_average_*, month (unchanged)
+  G. Base features   — Population, Median_Income, month (unchanged)
 
 Note: year-over-year (lag-12) was tested and dropped — marginal R² gain (+0.003)
 at the cost of halving the dataset (1,160 → 638 rows). Not worth the trade-off.
@@ -42,10 +42,6 @@ ENGINEERED_FEATURE_COLS = [
     # Base
     "Population",
     "Median_Income",
-    "monthly_average_CalFresh",
-    "monthly_average_FoodBank",
-    "monthly_average_FoodStamps",
-    "monthly_average_SNAPTopic",
     "month",
     # Lags — SNAP rate
     "rate_lag1",
@@ -197,27 +193,22 @@ def add_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add month-over-month momentum for Google Trends signals.
 
-    Momentum = current value − lag1 value. A positive value means search
-    interest is rising; negative means it is falling. This is the first
-    derivative of the trend signal — the direction matters as much as
-    the level for predicting next month's SNAP demand.
+    Momentum = lag1 − lag2 (i.e. t-1 minus t-2). A positive value means
+    search interest rose in the month before prediction; negative means it
+    fell. Using lag1−lag2 (not same-month minus lag1) avoids leakage:
+    month-t Trends are not available at prediction time.
 
     Features added:
-      calfresh_momentum — monthly_average_CalFresh minus calfresh_lag1
-      foodbank_momentum — monthly_average_FoodBank minus foodbank_lag1
+      calfresh_momentum — calfresh_lag1 minus calfresh_lag2
+      foodbank_momentum — foodbank_lag1 minus foodbank_lag2
 
     Requires add_lag_features() to have been called first.
     """
     if "calfresh_lag1" not in df.columns:
         raise ValueError("add_lag_features() must be called before add_momentum_features()")
 
-    for kw, col in [
-        ("calfresh",   "monthly_average_CalFresh"),
-        ("foodbank",   "monthly_average_FoodBank"),
-        ("foodstamps", "monthly_average_FoodStamps"),
-        ("snaptopic",  "monthly_average_SNAPTopic"),
-    ]:
-        df[f"{kw}_momentum"] = df[col] - df[f"{kw}_lag1"]
+    for kw in ["calfresh", "foodbank", "foodstamps", "snaptopic"]:
+        df[f"{kw}_momentum"] = df[f"{kw}_lag1"] - df[f"{kw}_lag2"]
 
     return df
 
@@ -361,9 +352,9 @@ FEATURE_REGISTRY = [
          description="3-month rolling mean of FoodBank trends index"),
     # ── Momentum features ─────────────────────────────────────────────────────
     dict(name="calfresh_momentum", group="momentum", nan_policy="drop",
-         description="CalFresh month-over-month change (current − lag1); positive = rising interest"),
+         description="CalFresh change lag1−lag2 (t-1 minus t-2); positive = rising interest, no leakage"),
     dict(name="foodbank_momentum", group="momentum", nan_policy="drop",
-         description="FoodBank month-over-month change (current − lag1)"),
+         description="FoodBank change lag1−lag2 (t-1 minus t-2)"),
     # ── Seasonality ───────────────────────────────────────────────────────────
     dict(name="month_sin", group="seasonality", nan_policy="never",
          description="sin(2π×month/12) — cyclical month encoding, adjacent to Dec/Jan"),
@@ -647,17 +638,19 @@ FEATURE_DICTIONARY = [
     dict(
         name="calfresh_momentum",
         group="Momentum",
-        definition="Month-over-month change in CalFresh search interest. Positive = rising interest "
-                   "(leading signal of increased demand). Negative = falling interest.",
-        formula="monthly_average_CalFresh(t) - monthly_average_CalFresh(t-1)",
+        definition="Change in CalFresh search interest from two months ago to one month ago. "
+                   "Positive = rising interest (leading signal of increased demand). Uses lag1−lag2 "
+                   "to avoid leakage: same-month Trends are not observable at prediction time.",
+        formula="calfresh_lag1(t-1) - calfresh_lag2(t-2)",
         source="Derived from src/data/trends/CalFresh/",
         dtype="float",
     ),
     dict(
         name="foodbank_momentum",
         group="Momentum",
-        definition="Month-over-month change in FoodBank search interest.",
-        formula="monthly_average_FoodBank(t) - monthly_average_FoodBank(t-1)",
+        definition="Change in FoodBank search interest from two months ago to one month ago. "
+                   "Uses lag1−lag2 to avoid leakage.",
+        formula="foodbank_lag1(t-1) - foodbank_lag2(t-2)",
         source="Derived from src/data/trends/FoodBank/",
         dtype="float",
     ),
