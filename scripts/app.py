@@ -248,6 +248,15 @@ with tabs[1]:
             target_month       = pred_dt
             pred_month_english = target_month.strftime("%b %Y")
 
+    # ── Prominent prediction target banner ────────────────────────────────────
+    if pred_month_english:
+        st.info(
+            f"**Predicting: {pred_month_english}** — Select "
+            f"\"Predicted — {pred_month_english}\" at the bottom of the dropdown to view the forecast."
+        )
+    else:
+        st.warning("No prediction file found. Run the pipeline to generate forecasts.")
+
     unique_dates = snap_df["date"].sort_values().unique()
     date_options = [pd.Timestamp(d).strftime("%b %Y") for d in unique_dates]
 
@@ -264,16 +273,39 @@ with tabs[1]:
                      and selected_date == f"Predicted — {pred_month_english}")
 
     if use_predicted:
-        # ── Predicted month: use the prediction file's label if present ──
+        # ── Predicted month: score against each county's 12-month baseline ───
         base_df = pred_df.copy()
         base_df = add_pop_columns(base_df, pop_df)
 
-        if "warning_flag" in base_df.columns:
-            base_df["Flag"] = base_df["warning_flag"].fillna("Gray")
-        elif "flag" in base_df.columns:
-            base_df["Flag"] = base_df["flag"].fillna("Gray")
-        else:
-            base_df["Flag"] = "Gray"
+        # Build county baseline rates from last 12 months of historical SNAP data
+        county_baselines = {}
+        if pop_df is not None:
+            snap_r = snap_df.copy()
+            snap_r["county_clean"] = snap_r["county"].str.replace(" County", "", regex=False)
+            snap_r = snap_r.merge(pop_df[["county_clean", "Population"]], on="county_clean", how="left")
+            snap_r = snap_r.dropna(subset=["Population", "SNAP_Applications"])
+            snap_r["rate"] = snap_r["SNAP_Applications"] / snap_r["Population"]
+            county_baselines = (
+                snap_r.sort_values("date")
+                      .groupby("county")
+                      .tail(12)
+                      .groupby("county")["rate"]
+                      .mean()
+                      .to_dict()
+            )
+
+        def score_predicted(row):
+            cty      = row.get("county_clean", row.get("county", ""))
+            baseline = county_baselines.get(cty)
+            if baseline is None or baseline <= 0:
+                return "Gray"
+            pr = row.get("predicted_rate")
+            if pr is None or pd.isna(pr):
+                return "Gray"
+            deviation = (pr - baseline) / baseline
+            return label_from_deviation(deviation, cty, red_thresholds, yellow_thresholds)
+
+        base_df["Flag"] = base_df.apply(score_predicted, axis=1)
 
         base_df["hover_text"] = base_df.apply(
             lambda row: build_hover(
@@ -283,8 +315,9 @@ with tabs[1]:
             ),
             axis=1,
         )
-        note = (f"Predicted classification for {pred_month_english}: "
-                f"uses labels supplied by the prediction output. Gray = unscored.")
+        note = (f"Predicted alert level for {pred_month_english}: "
+                f"Green/Yellow/Red = predicted rate vs each county's 12-month historical baseline "
+                f"(same county-specific thresholds as Historical Map). Gray = insufficient data.")
         draw_map(base_df, title_note=f"Predicted — {pred_month_english}")
         st.caption(note)
 
