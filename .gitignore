@@ -52,7 +52,15 @@ node_modules/
 county_models/
 
 # Pipeline generated outputs (reproduced by run_pipeline.py)
-outputs/
+outputs/data/
+outputs/figures/
+outputs/models/
+outputs/metrics/walkforward_predictions.csv
+outputs/metrics/walkforward_per_month.csv
+outputs/metrics/insample_metrics.json
+outputs/metrics/feature_importance.csv
+outputs/metrics/walkforward_overall.json
+outputs/metrics/paper_summary.json
 
 # Untracked diagnostic / scratch files
 src/data/interpolation_analysis.csv

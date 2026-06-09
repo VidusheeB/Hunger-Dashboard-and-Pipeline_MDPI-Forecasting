@@ -1,0 +1,59 @@
+date,county,metro_area,predicted_rate,predicted_applications,lower_bound,upper_bound,Population,flag,warning_flag
+2026-03-01,Alameda,SanFranciscoOaklandSanJose,0.004024,6478,5040,7916,1610046,Gray,Gray
+2026-03-01,Alpine,Reno,0.00617,6,6,7,1043,Gray,Gray
+2026-03-01,Amador,SacramentoStocktonModesto,0.003451,146,109,184,42447,Gray,Gray
+2026-03-01,Butte,ChicoRedding,0.007758,1604,1419,1789,206778,Gray,Gray
+2026-03-01,Calaveras,SacramentoStocktonModesto,0.004209,196,154,238,46583,Gray,Gray
+2026-03-01,Colusa,SacramentoStocktonModesto,0.003658,82,62,101,22293,Gray,Gray
+2026-03-01,Contra Costa,SanFranciscoOaklandSanJose,0.002711,3121,2093,4149,1151037,Gray,Gray
+2026-03-01,Del Norte,Eureka,0.006502,166,143,189,25543,Gray,Gray
+2026-03-01,El Dorado,SacramentoStocktonModesto,0.003238,619,448,789,191071,Gray,Gray
+2026-03-01,Fresno,FresnoVisalia,0.006292,6422,5511,7334,1020768,Gray,Gray
+2026-03-01,Glenn,ChicoRedding,0.005171,143,118,168,27667,Gray,Gray
+2026-03-01,Humboldt,Eureka,0.009267,1224,1106,1342,132067,Gray,Gray
+2026-03-01,Imperial,YumaElCentro,0.006387,1145,985,1305,179291,Gray,Gray
+2026-03-01,Inyo,LosAngeles,0.004594,83,67,99,18097,Gray,Gray
+2026-03-01,Kern,Bakersfield,0.006611,6002,5191,6813,907958,Gray,Gray
+2026-03-01,Kings,FresnoVisalia,0.005817,885,749,1020,152072,Gray,Gray
+2026-03-01,Lake,SanFranciscoOaklandSanJose,0.0062,417,357,477,67290,Gray,Gray
+2026-03-01,Lassen,Reno,0.005145,137,113,160,26543,Gray,Gray
+2026-03-01,Los Angeles,LosAngeles,0.005106,48769,40238,57300,9550505,Gray,Gray
+2026-03-01,Madera,FresnoVisalia,0.005218,876,726,1026,167916,Gray,Gray
+2026-03-01,Marin,SanFranciscoOaklandSanJose,0.001999,502,277,726,250913,Gray,Gray
+2026-03-01,Mariposa,FresnoVisalia,0.005633,94,79,109,16651,Gray,Gray
+2026-03-01,Mendocino,SanFranciscoOaklandSanJose,0.006223,543,465,621,87310,Gray,Gray
+2026-03-01,Merced,FresnoVisalia,0.005952,1758,1494,2022,295340,Gray,Gray
+2026-03-01,Modoc,MedfordKlamathFalls,0.006031,50,42,57,8262,Gray,Gray
+2026-03-01,Mono,Reno,0.003307,44,32,55,13194,Gray,Gray
+2026-03-01,Monterey,MontereySalinas,0.004208,1794,1414,2175,426401,Gray,Gray
+2026-03-01,Napa,SanFranciscoOaklandSanJose,0.002643,346,229,463,130908,Gray,Gray
+2026-03-01,Nevada,SacramentoStocktonModesto,0.004041,409,319,500,101309,Gray,Gray
+2026-03-01,Orange,LosAngeles,0.003546,11017,8242,13792,3106521,Gray,Gray
+2026-03-01,Placer,SacramentoStocktonModesto,0.002302,1000,612,1388,434535,Gray,Gray
+2026-03-01,Plumas,SacramentoStocktonModesto,0.005263,97,81,114,18507,Gray,Gray
+2026-03-01,Riverside,PalmSprings,0.004625,11696,9437,13954,2528844,Gray,Gray
+2026-03-01,Sacramento,SacramentoStocktonModesto,0.004957,7853,6438,9268,1584104,Gray,Gray
+2026-03-01,San Benito,MontereySalinas,0.002763,191,129,253,69239,Gray,Gray
+2026-03-01,San Bernardino,LosAngeles,0.005246,11525,9562,13487,2197017,Gray,Gray
+2026-03-01,San Diego,SanDiego,0.004564,14859,11951,17767,3255567,Gray,Gray
+2026-03-01,San Francisco,SanFranciscoOaklandSanJose,0.004222,3426,2701,4151,811416,Gray,Gray
+2026-03-01,San Joaquin,SacramentoStocktonModesto,0.004341,3535,2808,4263,814309,Gray,Gray
+2026-03-01,San Luis Obispo,SantaBarbaraSantaMariaSanLuisObispo,0.004084,1147,896,1398,280825,Gray,Gray
+2026-03-01,San Mateo,SanFranciscoOaklandSanJose,0.002012,1451,807,2095,721201,Gray,Gray
+2026-03-01,Santa Barbara,SantaBarbaraSantaMariaSanLuisObispo,0.00459,2001,1612,2390,435941,Gray,Gray
+2026-03-01,Santa Clara,SanFranciscoOaklandSanJose,0.002319,4351,2675,6026,1876106,Gray,Gray
+2026-03-01,Santa Cruz,MontereySalinas,0.003403,872,643,1100,256161,Gray,Gray
+2026-03-01,Shasta,ChicoRedding,0.007439,1333,1173,1493,179224,Gray,Gray
+2026-03-01,Sierra,SacramentoStocktonModesto,0.003918,12,10,15,3156,Gray,Gray
+2026-03-01,Siskiyou,MedfordKlamathFalls,0.006722,277,240,313,41143,Gray,Gray
+2026-03-01,Solano,SanFranciscoOaklandSanJose,0.00368,1656,1254,2057,449884,Gray,Gray
+2026-03-01,Sonoma,SanFranciscoOaklandSanJose,0.002887,1386,957,1815,480098,Gray,Gray
+2026-03-01,Stanislaus,SacramentoStocktonModesto,0.004983,2750,2257,3243,551838,Gray,Gray
+2026-03-01,Sutter,SacramentoStocktonModesto,0.004481,433,347,520,96706,Gray,Gray
+2026-03-01,Tehama,ChicoRedding,0.006181,396,339,453,64090,Gray,Gray
+2026-03-01,Trinity,ChicoRedding,0.006066,94,80,108,15454,Gray,Gray
+2026-03-01,Tulare,FresnoVisalia,0.005726,2763,2332,3195,482636,Gray,Gray
+2026-03-01,Tuolumne,SacramentoStocktonModesto,0.004791,256,208,304,53438,Gray,Gray
+2026-03-01,Ventura,LosAngeles,0.003514,2892,2157,3627,823028,Gray,Gray
+2026-03-01,Yolo,SacramentoStocktonModesto,0.005476,1191,997,1386,217596,Gray,Gray
+2026-03-01,Yuba,SacramentoStocktonModesto,0.005185,459,380,538,88460,Gray,Gray
