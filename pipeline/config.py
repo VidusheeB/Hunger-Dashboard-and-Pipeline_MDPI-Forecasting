@@ -112,7 +112,7 @@ WALK_FORWARD_MIN_MONTHS = 12
 # ── Data cleaning ─────────────────────────────────────────────────────────────
 # Rows where SNAP_Applications > OUTLIER_THRESHOLD × county median are dropped.
 # Catches data-entry spikes (e.g. Madera Jan 2023: 11,090 vs typical ~1,000).
-OUTLIER_THRESHOLD = 3.0
+OUTLIER_THRESHOLD = 5.0
 
 # ── Convenience: ensure all output directories exist ─────────────────────────
 def ensure_output_dirs():
