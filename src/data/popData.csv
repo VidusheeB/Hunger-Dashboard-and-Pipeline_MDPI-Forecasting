@@ -1,59 +1,59 @@
 County,Population,Population Density,metro_area,fips
-Alameda County,1610046,2185,San Francisco - Oakland - San Jose,001
-Alpine County,1043,1,Sacramento - Stockton - Modesto,003
-Amador County,42447,71,Sacramento - Stockton - Modesto,005
-Butte County,206778,126,Sacramento - Stockton - Modesto,007
-Calaveras County,46583,46,Sacramento - Stockton - Modesto,009
-Colusa County,22293,19,Sacramento - Stockton - Modesto,011
-Contra Costa County,1151037,1605,San Francisco - Oakland - San Jose,013
-Del Norte County,25543,25,Sacramento - Stockton - Modesto,015
-El Dorado County,191071,112,Sacramento - Stockton - Modesto,017
-Fresno County,1020768,171,Sacramento - Stockton - Modesto,019
-Glenn County,27667,21,Sacramento - Stockton - Modesto,021
-Humboldt County,132067,37,Sacramento - Stockton - Modesto,023
-Imperial County,179291,43,San Diego,025
-Inyo County,18097,2,Los Angeles,027
-Kern County,907958,112,Los Angeles,029
-Kings County,152072,109,Sacramento - Stockton - Modesto,031
-Lake County,67290,54,Sacramento - Stockton - Modesto,033
-Lassen County,26543,6,Sacramento - Stockton - Modesto,035
-Los Angeles County,9550505,2352,San Diego,037
-Madera County,167916,79,Sacramento - Stockton - Modesto,039
-Marin County,250913,483,San Francisco - Oakland - San Jose,041
-Mariposa County,16651,11,Sacramento - Stockton - Modesto,043
-Mendocino County,87310,25,San Francisco - Oakland - San Jose,045
-Merced County,295340,152,Sacramento - Stockton - Modesto,047
-Modoc County,8262,2,Sacramento - Stockton - Modesto,049
-Mono County,13194,4,Sacramento - Stockton - Modesto,051
-Monterey County,426401,130,San Diego,053
-Napa County,130908,174,San Francisco - Oakland - San Jose,055
-Nevada County,101309,106,Sacramento - Stockton - Modesto,057
-Orange County,3106521,3917,Los Angeles,059
-Placer County,434535,309,Sacramento - Stockton - Modesto,061
-Plumas County,18507,7,Sacramento - Stockton - Modesto,063
-Riverside County,2528844,351,San Diego,065
-Sacramento County,1584104,1642,Sacramento - Stockton - Modesto,067
-San Benito County,69239,50,San Francisco - Oakland - San Jose,069
-San Bernardino County,2197017,109,San Diego,071
-San Diego County,3255567,773,Los Angeles,073
-San Francisco County,811416,17264,San Francisco - Oakland - San Jose,075
-San Joaquin County,814309,585,Sacramento - Stockton - Modesto,077
-San Luis Obispo County,280825,85,San Francisco - Oakland - San Jose,079
-San Mateo County,721201,1606,San Francisco - Oakland - San Jose,081
-Santa Barbara County,435941,159,Los Angeles,083
-Santa Clara County,1876106,1453,San Francisco - Oakland - San Jose,085
-Santa Cruz County,256161,576,San Francisco - Oakland - San Jose,087
-Shasta County,179224,47,Sacramento - Stockton - Modesto,089
-Sierra County,3156,3,Sacramento - Stockton - Modesto,091
-Siskiyou County,41143,7,Sacramento - Stockton - Modesto,093
-Solano County,449884,547,San Francisco - Oakland - San Jose,095
-Sonoma County,480098,305,San Francisco - Oakland - San Jose,097
-Stanislaus County,551838,369,Sacramento - Stockton - Modesto,099
-Sutter County,96706,160,Sacramento - Stockton - Modesto,101
-Tehama County,64090,22,Sacramento - Stockton - Modesto,103
-Trinity County,15454,5,Sacramento - Stockton - Modesto,105
-Tulare County,482636,100,Los Angeles,107
-Tuolumne County,53438,24,Sacramento - Stockton - Modesto,109
-Ventura County,823028,447,Los Angeles,111
-Yolo County,217596,215,Sacramento - Stockton - Modesto,113
-Yuba County,88460,140,Sacramento - Stockton - Modesto,115
+Alameda,1610046,2185,SanFranciscoOaklandSanJose,06001
+Alpine,1043,1,SacramentoStocktonModesto,06003
+Amador,42447,71,SacramentoStocktonModesto,06005
+Butte,206778,126,SacramentoStocktonModesto,06007
+Calaveras,46583,46,SacramentoStocktonModesto,06009
+Colusa,22293,19,SacramentoStocktonModesto,06011
+Contra Costa,1151037,1605,SanFranciscoOaklandSanJose,06013
+Del Norte,25543,25,SacramentoStocktonModesto,06015
+El Dorado,191071,112,SacramentoStocktonModesto,06017
+Fresno,1020768,171,SacramentoStocktonModesto,06019
+Glenn,27667,21,SacramentoStocktonModesto,06021
+Humboldt,132067,37,SacramentoStocktonModesto,06023
+Imperial,179291,43,YumaElCentro,06025
+Inyo,18097,2,LosAngeles,06027
+Kern,907958,112,LosAngeles,06029
+Kings,152072,109,SacramentoStocktonModesto,06031
+Lake,67290,54,SacramentoStocktonModesto,06033
+Lassen,26543,6,SacramentoStocktonModesto,06035
+Los Angeles,9550505,2352,SanDiego,06037
+Madera,167916,79,SacramentoStocktonModesto,06039
+Marin,250913,483,SanFranciscoOaklandSanJose,06041
+Mariposa,16651,11,SacramentoStocktonModesto,06043
+Mendocino,87310,25,SanFranciscoOaklandSanJose,06045
+Merced,295340,152,SacramentoStocktonModesto,06047
+Modoc,8262,2,SacramentoStocktonModesto,06049
+Mono,13194,4,SacramentoStocktonModesto,06051
+Monterey,426401,130,SanDiego,06053
+Napa,130908,174,SanFranciscoOaklandSanJose,06055
+Nevada,101309,106,SacramentoStocktonModesto,06057
+Orange,3106521,3917,LosAngeles,06059
+Placer,434535,309,SacramentoStocktonModesto,06061
+Plumas,18507,7,SacramentoStocktonModesto,06063
+Riverside,2528844,351,SanDiego,06065
+Sacramento,1584104,1642,SacramentoStocktonModesto,06067
+San Benito,69239,50,SanFranciscoOaklandSanJose,06069
+San Bernardino,2197017,109,SanDiego,06071
+San Diego,3255567,773,LosAngeles,06073
+San Francisco,811416,17264,SanFranciscoOaklandSanJose,06075
+San Joaquin,814309,585,SacramentoStocktonModesto,06077
+San Luis Obispo,280825,85,SanFranciscoOaklandSanJose,06079
+San Mateo,721201,1606,SanFranciscoOaklandSanJose,06081
+Santa Barbara,435941,159,LosAngeles,06083
+Santa Clara,1876106,1453,SanFranciscoOaklandSanJose,06085
+Santa Cruz,256161,576,SanFranciscoOaklandSanJose,06087
+Shasta,179224,47,SacramentoStocktonModesto,06089
+Sierra,3156,3,SacramentoStocktonModesto,06091
+Siskiyou,41143,7,SacramentoStocktonModesto,06093
+Solano,449884,547,SanFranciscoOaklandSanJose,06095
+Sonoma,480098,305,SanFranciscoOaklandSanJose,06097
+Stanislaus,551838,369,SacramentoStocktonModesto,06099
+Sutter,96706,160,SacramentoStocktonModesto,06101
+Tehama,64090,22,SacramentoStocktonModesto,06103
+Trinity,15454,5,SacramentoStocktonModesto,06105
+Tulare,482636,100,LosAngeles,06107
+Tuolumne,53438,24,SacramentoStocktonModesto,06109
+Ventura,823028,447,LosAngeles,06111
+Yolo,217596,215,SacramentoStocktonModesto,06113
+Yuba,88460,140,SacramentoStocktonModesto,06115
