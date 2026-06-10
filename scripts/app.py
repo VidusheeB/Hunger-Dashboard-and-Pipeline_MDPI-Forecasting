@@ -14,12 +14,21 @@ ALERT_LABELS_CSV  = os.path.join("outputs", "metrics", "threshold_alert_labels.c
 ALERT_SUMMARY_JSON = os.path.join("outputs", "metrics", "threshold_alert_summary.json")
 
 FLAG_COLOR_MAP = {
-    "Red":    "#e74c3c",
-    "Yellow": "#f7ca18",
-    "Green":  "#27ae60",
-    "Gray":   "#888888",
-    None:     "#888888",
+    "High Risk":    "#e74c3c",
+    "Medium Risk":  "#f7ca18",
+    "Low Risk":     "#27ae60",
+    "No Data":      "#888888",
 }
+
+DISPLAY_LABEL = {
+    "Red":    "High Risk",
+    "Yellow": "Medium Risk",
+    "Green":  "Low Risk",
+    "Gray":   "No Data",
+    None:     "No Data",
+}
+
+ALL_FLAGS = ["High Risk", "Medium Risk", "Low Risk", "No Data"]
 
 
 # ── Data loaders ──────────────────────────────────────────────────────────────
@@ -147,13 +156,27 @@ def build_hover(row, snap_label, snap_val, pred_val=None, pred_month=None):
 
 def draw_map(filtered_df, title_note=""):
     counties_geojson = load_geojson()
+    plot_df = filtered_df.copy()
+
+    # Remap internal flag names to display labels
+    plot_df["Flag"] = plot_df["Flag"].map(lambda f: DISPLAY_LABEL.get(f, "No Data"))
+
+    # Add one dummy row per missing category so all legend entries always appear
+    present = set(plot_df["Flag"])
+    dummy_rows = []
+    for flag in ALL_FLAGS:
+        if flag not in present:
+            dummy_rows.append({"county": "", "Flag": flag, "hover_text": ""})
+    if dummy_rows:
+        plot_df = pd.concat([plot_df, pd.DataFrame(dummy_rows)], ignore_index=True)
+
     fig = px.choropleth(
-        filtered_df,
+        plot_df,
         geojson=counties_geojson,
         locations="county",
         color="Flag",
         color_discrete_map=FLAG_COLOR_MAP,
-        category_orders={"Flag": ["Red", "Yellow", "Green", "Gray"]},
+        category_orders={"Flag": ALL_FLAGS},
         custom_data=["hover_text"],
         featureidkey="properties.name",
         scope="usa",
@@ -162,15 +185,17 @@ def draw_map(filtered_df, title_note=""):
     fig.update_traces(hovertemplate="%{customdata[0]}<extra></extra>")
     fig.update_geos(fitbounds="locations", visible=True)
     fig.update_layout(
-        margin={"r": 0, "t": 30, "l": 0, "b": 0},
+        margin={"r": 0, "t": 30, "l": 0, "b": 80},
         showlegend=True,
         legend=dict(
-            title="Alert Level",
-            orientation="v",
-            x=0.01, y=0.5,
-            bgcolor="rgba(255,255,255,0.8)",
+            title=dict(text="Alert Level", font=dict(size=12)),
+            orientation="h",
+            x=0.0, y=-0.05,
+            xanchor="left", yanchor="top",
+            bgcolor="rgba(255,255,255,0.9)",
             bordercolor="#cccccc",
             borderwidth=1,
+            font=dict(size=12),
         ),
         title=dict(text=title_note, x=0.5, font=dict(size=13)),
     )
@@ -218,8 +243,9 @@ with tabs[0]:
         axis=1,
     )
 
-    note = ("Green/Yellow/Red: deviation-based alert classification (model prediction vs actual). "
-            "Gray = month predates the model's walk-forward window (pre-April 2018).")
+    note = ("High/Medium/Low Risk: county flagged when actual SNAP applications exceeded model prediction "
+            "by more than a county-specific threshold (60th / 50th percentile of historical deviations). "
+            "No Data = month predates the model window (pre-Apr 2018) or missing source data (e.g. BLS gap).")
     draw_map(filtered_df, title_note=selected_date)
     st.caption(note)
 
@@ -316,8 +342,9 @@ with tabs[1]:
             axis=1,
         )
         note = (f"Predicted alert level for {pred_month_english}: "
-                f"Green/Yellow/Red = predicted rate vs each county's 12-month historical baseline "
-                f"(same county-specific thresholds as Historical Map). Gray = insufficient data.")
+                f"High/Medium/Low Risk = predicted rate vs each county's 12-month historical baseline, "
+                f"using the same county-specific deviation thresholds as the Historical Map. "
+                f"No Data = insufficient historical data for that county.")
         draw_map(base_df, title_note=f"Predicted — {pred_month_english}")
         st.caption(note)
 
@@ -354,7 +381,8 @@ with tabs[1]:
                 axis=1,
             )
 
-        note = ("Green/Yellow/Red: deviation-based alert classification. "
-                "Gray = month predates the model's walk-forward window (pre-April 2018).")
+        note = ("High/Medium/Low Risk: county flagged when actual SNAP applications exceeded model prediction "
+                "by more than a county-specific threshold (60th / 50th percentile of historical deviations). "
+                "No Data = month predates the model window (pre-Apr 2018) or missing source data.")
         draw_map(filtered_df, title_note=selected_date)
         st.caption(note)
