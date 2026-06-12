@@ -185,19 +185,19 @@ def draw_map(filtered_df, title_note=""):
     fig.update_traces(hovertemplate="%{customdata[0]}<extra></extra>")
     fig.update_geos(fitbounds="locations", visible=True)
     fig.update_layout(
-        margin={"r": 0, "t": 30, "l": 0, "b": 0},
+        margin={"r": 0, "t": 70, "l": 0, "b": 0},
         showlegend=True,
         legend=dict(
-            title=dict(text="Alert Level", font=dict(size=12)),
-            orientation="v",
-            x=1.0, y=1.0,
-            xanchor="right", yanchor="top",
+            title=None,
+            orientation="h",
+            x=0.0, y=1.08,
+            xanchor="left", yanchor="bottom",
             bgcolor="rgba(255,255,255,0.9)",
             bordercolor="#cccccc",
             borderwidth=1,
             font=dict(size=12),
         ),
-        title=dict(text=title_note, x=0.5, font=dict(size=13)),
+        title=dict(text=title_note, x=0.5, y=1.0, yanchor="top", font=dict(size=13)),
     )
     st.plotly_chart(fig, use_container_width=True)
 
