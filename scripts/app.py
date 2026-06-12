@@ -185,13 +185,13 @@ def draw_map(filtered_df, title_note=""):
     fig.update_traces(hovertemplate="%{customdata[0]}<extra></extra>")
     fig.update_geos(fitbounds="locations", visible=True)
     fig.update_layout(
-        margin={"r": 0, "t": 30, "l": 0, "b": 80},
+        margin={"r": 0, "t": 30, "l": 0, "b": 0},
         showlegend=True,
         legend=dict(
             title=dict(text="Alert Level", font=dict(size=12)),
-            orientation="h",
-            x=0.0, y=-0.05,
-            xanchor="left", yanchor="top",
+            orientation="v",
+            x=1.0, y=1.0,
+            xanchor="right", yanchor="top",
             bgcolor="rgba(255,255,255,0.9)",
             bordercolor="#cccccc",
             borderwidth=1,
