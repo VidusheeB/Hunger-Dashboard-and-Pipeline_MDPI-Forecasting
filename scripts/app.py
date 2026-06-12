@@ -301,6 +301,7 @@ with tabs[1]:
     if use_predicted:
         # ── Predicted month: score against each county's 12-month baseline ───
         base_df = pred_df.copy()
+        base_df = base_df.drop(columns=[c for c in ["metro_area", "Population"] if c in base_df.columns])
         base_df = add_pop_columns(base_df, pop_df)
 
         # Build county baseline rates from last 12 months of historical SNAP data
